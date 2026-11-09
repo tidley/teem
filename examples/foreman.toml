@@ -1,0 +1,7 @@
+# Copy to the directory printed by `herdr plugin config-dir local.teem`.
+# Explicitly authorise checkout roots and a model before enabling the service.
+enabled = false
+state_dir = "~/.local/state/teem"
+registry = "~/.local/state/opencode/service.json"
+model = "openai/gpt-6.1-sol"
+allowed_checkouts = []
