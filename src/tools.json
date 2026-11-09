@@ -128,6 +128,29 @@
     }
   },
   {
+    "name": "foreman_integrate",
+    "description": "After explicit user approval, apply an exact ready candidate to its original clean source at its original base. Rechecks approved tests and both snapshot-bound reviews; never commits, pushes, deploys or repeats uncertain operations. Alternatively provide the full commit ID to verify and record an already integrated exact-candidate commit. Status and passive progress share the durable integration receipt; publication is not implied. Dirty or advanced sources require separate reconciliation, not a forced apply.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": { "type": "string" },
+        "commit": { "type": "string", "description": "Optional full existing integration commit to verify and record; omit to apply locally" }
+      },
+      "required": ["workflow_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "foreman_color",
+    "description": "Set the bound Foreman's local UI accent to a six-digit hex color. Changes only agents.teem_foreman.color in the configured project's JSON profile; preserves permissions, MCP bindings and other settings. No shell or restart is needed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "project": { "type": "string" }, "color": { "type": "string" } },
+      "required": ["project", "color"],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "foreman_workflow",
     "description": "Delegate implementation, approved checks, two independent exact-snapshot reviews and bounded revisions. Use a project alias from foreman_status.projects and acceptance criteria. The supervisor chooses separate checkouts and base revisions; never ask the human for paths or hashes. No model override, arbitrary commands, commits, integration or publication. Optionally split a task into up to two workers with disjoint file scopes. Each task has its own two implementation and two review slots; additional tasks do not share them. Their combined candidate must pass checks and both reviews. Revisions use one worker on that candidate; stay within the user's authorised scope. Retain one UUID per immutable workflow, never replace uncertain work. The workflow appears automatically in passive progress. Do not call todowrite for Teem or wait/poll to update it. Finish your dispatch response so the human can keep talking. Progress and individual agent completions do not wake you. One final workflow outcome asks for a concise result summary, not checklist maintenance.",
     "inputSchema": {

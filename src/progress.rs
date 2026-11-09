@@ -336,7 +336,9 @@ pub fn snapshot(s: &Store, f: &str) -> Result<Value> {
             .then_with(|| text(a, "id").cmp(&text(b, "id")))
     });
     if let Some(w) = finished.last() {
-        let content = if w["state"] == "ready" {
+        let content = if !w["integration"].is_null() {
+            crate::operator::description(&w["integration"])
+        } else if w["state"] == "ready" {
             "Completed · approved checks and both reviews passed; not integrated".into()
         } else {
             format!(

@@ -165,6 +165,11 @@ impl Store {
         for k in ["request", "policy", "data"] {
             v[k] = serde_json::from_str(v[k].as_str().context("Invalid stored workflow")?)?;
         }
+        v["integration"] = crate::operator::receipt(self, id)?;
+        if !v["integration"].is_null() {
+            v["candidate_detail"] = v["detail"].clone();
+            v["detail"] = json!(crate::operator::description(&v["integration"]));
+        }
         Ok(v)
     }
     pub fn workflows(&self, f: &str) -> Result<Vec<Value>> {

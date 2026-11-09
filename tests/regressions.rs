@@ -918,7 +918,39 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
         json!({"action":"*","resource":"*","effect":"deny"})
     );
     assert!(!permissions.iter().any(|p| {
-        ["edit", "shell", "subagent"].contains(&text(p, "action").as_str())
+        ["shell", "subagent", "execute"].contains(&text(p, "action").as_str())
             && p["effect"] == "allow"
     }));
+    for (action, effect) in [
+        ("shell", "ask"),
+        ("edit", "allow"),
+        ("teem_foreman_integrate", "ask"),
+        ("teem_foreman_color", "allow"),
+    ] {
+        assert!(
+            permissions
+                .iter()
+                .any(|p| p["action"] == action && p["effect"] == effect)
+        );
+    }
+    assert!(permissions.iter().any(|p| p["action"] == "edit"
+        && p["resource"] == "**/opencode.json"
+        && p["effect"] == "deny"));
+    // OpenCode uses project-relative resources and '*' wildcards, not globstar:
+    // '**/opencode.json' does not match the root-level 'opencode.json'.
+    for resource in [
+        "opencode.json",
+        "opencode.jsonc",
+        ".git",
+        ".git/*",
+        ".opencode",
+        ".opencode/*",
+    ] {
+        assert!(
+            permissions.iter().any(|p| p["action"] == "edit"
+                && p["resource"] == resource
+                && p["effect"] == "deny"),
+            "Missing root protection for {resource}"
+        );
+    }
 }

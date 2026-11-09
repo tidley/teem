@@ -99,6 +99,8 @@ pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
         "foreman_status" => s.status(f, args),
         "foreman_plan" => progress::set_plan(s, f, &args["items"]),
         "foreman_workflow" => s.workflow_submit(f, args.clone()),
+        "foreman_integrate" => crate::operator::integrate(s, f, args),
+        "foreman_color" => crate::operator::color(s, f, args),
         "foreman_ack" => {
             s.ack(f, args["event_id"].as_str().context("Invalid event ID")?)?;
             Ok(json!({"acknowledged":true}))

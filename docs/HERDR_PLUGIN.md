@@ -102,6 +102,26 @@ The MCP tools appear with their own schemas and descriptions. They do not depend
 - `foreman_ack`: acknowledge one event after consuming its result. This does not approve code.
 - `foreman_plan`: define this conversation's ordered checklist, linking execution items to retained task UUIDs.
 - `foreman_workflow`: supply a configured project alias, retained workflow UUID, scope and acceptance criteria. No checkout paths or base hashes are needed.
+- `foreman_integrate`: after approval, apply a ready exact candidate to its original clean source. Supply a full `commit` instead to verify and record an already integrated exact-candidate commit.
+- `foreman_color`: set this bound Foreman's local accent using `project` and a six-digit hex `color`. No shell or restart is needed.
+
+The current example profile supports ordinary local edits. Shell commands and
+candidate integration require native approval; it cannot edit its own OpenCode
+configuration or Git metadata. Use the bounded color tool for appearance changes.
+Commits, publication, destructive actions and deployment still require their own
+user authorisation. Never use shell/API access to answer worker permission cards
+or to change Teem state. Edit permissions are not an OS sandbox.
+
+Integration rechecks the patch digest, approved check receipts and both reviewers
+against the same candidate before writing source. Source must be clean and at
+the original base; source drift blocks application instead of forcing a merge.
+An attempting marker survives crashes. Repeated calls only reconcile matching
+source by reads; they never repeat an uncertain apply. Workflow history stays
+unchanged. The separate `integration` receipt and current `detail` are included
+in status and passive progress; `candidate_detail` retains the original outcome.
+Commit recording verifies the exact candidate tree and its ancestry in source.
+It does not infer remote publication or installation. When source is committed
+outside the tool, record the verified commit before reporting integration status.
 
 Status also lists approval card IDs, worker permission IDs, and relay states. There is no
 model-callable approval tool. The Foreman must not answer cards on the human's behalf
@@ -190,7 +210,8 @@ Workflow progression is:
     executions (two initial, one revision) and four reviewer executions per task.
 7. Report `ready` only when the exact candidate passes all configured checks and both
    reviews. The patch remains local and uncommitted. No integration, merge, publication,
-   deployment or release is performed. Multiple workflows are not automatically combined.
+    deployment or release is performed by progression. Separate explicit integration
+    uses the operator tool described above. Multiple workflows are not automatically combined.
 
 Each managed task has independent two-worker/two-reviewer caps. Additional work can
 run its own team rather than waiting for another task's agent slots. Uncertain agents

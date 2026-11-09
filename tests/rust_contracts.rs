@@ -149,7 +149,7 @@ fn installed_binary_and_mcp_round_trip_need_no_python_runtime() {
         .collect::<Vec<_>>();
     assert_eq!(responses.len(), 3);
     assert_eq!(responses[0]["result"]["protocolVersion"], "2025-11-25");
-    assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 7);
     let plan: Value = serde_json::from_str(
         responses[2]["result"]["content"][0]["text"]
             .as_str()

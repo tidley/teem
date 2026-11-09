@@ -25,6 +25,7 @@ No paid worker run is part of repository setup.
 
 - `herdr-plugin.toml`: Teem actions, startup hook, and transient status popup.
 - `src/plugin.rs`: Herdr commands, fixed-binding MCP tools, and service unit output.
+- `src/operator.rs`: explicit candidate integration, verified commit receipts and bounded Foreman color updates.
 - `src/store.rs`: SQLite tasks, per-task 2+2 limits, and exclusive checkout ownership.
 - `src/runtime.rs`: loopback-only OpenCode HTTP, completion admission and permission rules.
 - `src/progress.rs`: plans, atomic private progress snapshots and native todo observations.
@@ -73,7 +74,13 @@ See [the plugin guide](docs/HERDR_PLUGIN.md) and [the local pilot](docs/PILOT.md
 The legacy task API uses separate authorised checkouts. Workers may be sparse; legacy reviewers must be complete and pinned to a commit.
 Managed workflows choose their own base and prepare separate complete clones from a configured source project.
 They run approved checks and review the exact uncommitted patch/tree snapshot without creating source commits.
-The supervisor does not grant blanket shell access, integrate changes, merge, push, deploy, or replay uncertain tasks.
+The supervisor never automatically integrates, merges, pushes, deploys or replays uncertain tasks.
+After user approval, `foreman_integrate` can apply an exact verified candidate to
+its original clean source, or verify and record its integration commit. It never
+commits or publishes. Shared status and the sidebar show integration receipts.
+The Foreman profile permits routine local edits, asks before shell commands and
+integration, and protects its own permissions/MCP configuration. `foreman_color`
+changes only its local accent without needing shell access.
 Code permissions are not an operating-system sandbox. Existing phone admission and desktop draft races remain unqualified.
 The pilot Foreman uses a project-local runtime profile. This does not impose that profile on other conversations.
 Completion admission is not Foreman consumption. Uncertain delivery is reconciled by exact native message ID, never automatic resend.

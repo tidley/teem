@@ -412,6 +412,256 @@ fn finish_workers(s: &Store) {
         }
     }
 }
+
+fn ready_operator_fixture(tmp: &Path) -> (Store, Value) {
+    let (s, f, w) = workflow_fixture(tmp, false);
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&text(&w, "id")).unwrap();
+    await_receipt(&w["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&text(&w, "id")).unwrap();
+    for id in array(&w["data"]["rounds"][0]["review_ids"]) {
+        s.update(id.as_str().unwrap(), "succeeded", &json!({"snapshot":w["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"pass","findings":[]}).to_string(), "").unwrap();
+    }
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&text(&w, "id")).unwrap();
+    assert_eq!(w["state"], "ready");
+    (s, w)
+}
+
+#[test]
+fn operator_integration_applies_exact_candidate_and_updates_shared_status_without_replay() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let before = s.query("SELECT * FROM workflows", []).unwrap();
+    let events = s.query("SELECT * FROM events", []).unwrap();
+    let args = json!({"workflow_id":w["id"]});
+    let receipt = plugin::call(&s, "ses_test", "foreman_integrate", &args).unwrap();
+    assert_eq!(receipt["state"], "applied");
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("source/src/a")).unwrap(),
+        "changed\n"
+    );
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_integrate", &args).unwrap(),
+        receipt
+    );
+    assert_eq!(s.query("SELECT * FROM workflows", []).unwrap(), before);
+    assert_eq!(s.query("SELECT * FROM events", []).unwrap(), events);
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap()["integration"], receipt);
+    assert!(
+        text(
+            &progress::snapshot(&s, "ses_test").unwrap()["latest_result"],
+            "content"
+        )
+        .contains("Applied locally")
+    );
+}
+
+#[test]
+fn operator_integration_rejects_dirty_source_foreign_owner_and_changed_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let args = json!({"workflow_id":w["id"]});
+    s.bind("ses_other", "other-terminal").unwrap();
+    assert!(plugin::call(&s, "ses_other", "foreman_integrate", &args).is_err());
+    fs::write(tmp.path().join("source/unrelated"), "user data").unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_integrate", &args).is_err());
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("source/src/a")).unwrap(),
+        "base\n"
+    );
+    fs::remove_file(tmp.path().join("source/unrelated")).unwrap();
+    let patch = text(&w["data"]["rounds"][0]["snapshot"], "patch");
+    fs::remove_file(&patch).unwrap();
+    fs::write(&patch, "tampered").unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_integrate", &args).is_err());
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("source/src/a")).unwrap(),
+        "base\n"
+    );
+}
+
+#[test]
+fn operator_can_record_an_exact_integrated_commit_without_changing_workflow_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let source = tmp.path().join("source");
+    fs::write(source.join("src/a"), "changed\n").unwrap();
+    git(&source, &["add", "src/a"], None, None).unwrap();
+    git(&source, &["commit", "-qm", "integrated"], None, None).unwrap();
+    let commit = git_text(&source, &["rev-parse", "HEAD"]).unwrap();
+    let receipt = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_integrate",
+        &json!({"workflow_id":w["id"],"commit":commit}),
+    )
+    .unwrap();
+    assert_eq!(receipt["state"], "committed");
+    assert_eq!(receipt["commit"], commit);
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap()["integration"], receipt);
+    assert!(
+        text(
+            &progress::snapshot(&s, "ses_test").unwrap()["latest_result"],
+            "content"
+        )
+        .contains("Recorded integration commit")
+    );
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_integrate",
+            &json!({"workflow_id":w["id"],"commit":w["base_revision"]})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn operator_color_changes_only_the_bound_foreman_color() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, _) = workflow_fixture(tmp.path(), false);
+    let path = tmp.path().join("source/opencode.json");
+    let mut config = json!({"agents":{"teem_foreman":{"color":"#C9956B","permissions":[{"action":"shell","effect":"ask","resource":"*"}]}},"mcp":{"servers":{"teem":{"command":["teem","mcp","--foreman","ses_test"]}}}});
+    fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let args = json!({"project":"project","color":"#7D9DB8"});
+    plugin::call(&s, "ses_test", "foreman_color", &args).unwrap();
+    config["agents"]["teem_foreman"]["color"] = json!("#7D9DB8");
+    assert_eq!(read_json(&path).unwrap(), config);
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_color",
+            &json!({"project":"project","color":"not a color"})
+        )
+        .is_err()
+    );
+    s.bind("ses_other", "other-terminal").unwrap();
+    assert!(plugin::call(&s, "ses_other", "foreman_color", &args).is_err());
+    assert_eq!(read_json(&path).unwrap(), config);
+}
+
+#[test]
+fn operator_uncertain_apply_is_read_reconciled_but_never_repeated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let id = text(&w, "id");
+    let snapshot = &w["data"]["rounds"][0]["snapshot"];
+    let receipt = json!({"workflow_id":id,"source":tmp.path().join("source"),"snapshot":snapshot["sha256"],"state":"attempting"});
+    s.exec(
+        "INSERT INTO integrations VALUES (?,?)",
+        rusqlite::params![id, canonical(&receipt)],
+    )
+    .unwrap();
+    let args = json!({"workflow_id":id});
+    assert!(plugin::call(&s, "ses_test", "foreman_integrate", &args).is_err());
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("source/src/a")).unwrap(),
+        "base\n"
+    );
+    fs::write(tmp.path().join("source/src/a"), "changed\n").unwrap();
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_integrate", &args).unwrap()["state"],
+        "applied"
+    );
+    let directory = s.directory.clone();
+    let projects = s.projects.clone();
+    drop(s);
+    let s = Store::open(&directory, &[], projects).unwrap();
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_integrate", &args).unwrap()["state"],
+        "applied"
+    );
+}
+
+#[test]
+fn operator_integration_rechecks_approved_log_bytes_and_ready_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let id = text(&w, "id");
+    let args = json!({"workflow_id":id});
+    s.exec("UPDATE workflows SET state='blocked' WHERE id=?", [&id])
+        .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_integrate", &args).is_err());
+    s.exec("UPDATE workflows SET state='ready' WHERE id=?", [&id])
+        .unwrap();
+    let log = text(&w["data"]["rounds"][0]["check_result"]["results"][0], "log");
+    fs::write(log, "tampered check output").unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_integrate", &args).is_err());
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("source/src/a")).unwrap(),
+        "base\n"
+    );
+    assert!(
+        s.query("SELECT * FROM integrations", [])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn operator_integration_rejects_advanced_source_and_nonmatching_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let id = text(&w, "id");
+    let root = tmp.path().join("source");
+    fs::write(root.join("src/a"), "unrelated change\n").unwrap();
+    git(&root, &["add", "src/a"], None, None).unwrap();
+    git(&root, &["commit", "-qm", "unrelated"], None, None).unwrap();
+    let commit = git_text(&root, &["rev-parse", "HEAD"]).unwrap();
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_integrate",
+            &json!({"workflow_id":id})
+        )
+        .is_err()
+    );
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_integrate",
+            &json!({"workflow_id":id,"commit":commit})
+        )
+        .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("src/a")).unwrap(),
+        "unrelated change\n"
+    );
+    assert!(
+        s.query("SELECT * FROM integrations", [])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn operator_color_rejects_symlinks_and_keeps_the_target_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, _) = workflow_fixture(tmp.path(), false);
+    let target = tmp.path().join("private.json");
+    fs::write(&target, "{}").unwrap();
+    std::os::unix::fs::symlink(&target, tmp.path().join("source/opencode.json")).unwrap();
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_color",
+            &json!({"project":"project","color":"#7D9DB8"})
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read_to_string(target).unwrap(), "{}");
+}
 #[test]
 fn two_workers_checks_and_two_exact_reviews_gate_ready_and_one_final_notice() {
     let tmp = tempfile::tempdir().unwrap();
