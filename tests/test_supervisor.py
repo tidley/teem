@@ -20,6 +20,9 @@ class FakeRuntime:
         self.prompts = []
         self.fail_prompt = False
 
+    def dispatch_model(self, task):
+        return {"providerID": "test", "id": "foreman-model"}
+
     def create(self, task):
         self.sessions[task["session_id"]] = {
             "task": task, "state": "missing", "result": "", "accepted": False}
@@ -39,7 +42,7 @@ class FakeRuntime:
 
 class SupervisorTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="foreman-", dir="/tmp/opencode")
+        self.temp = tempfile.TemporaryDirectory(prefix="foreman-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.checkouts = []
@@ -191,6 +194,57 @@ class SupervisorTests(unittest.TestCase):
     def test_private_state(self):
         self.assertEqual((self.root / "state").stat().st_mode & 0o777, 0o700)
         self.assertEqual((self.root / "state/tasks.sqlite3").stat().st_mode & 0o777, 0o600)
+
+    def test_dispatch_records_inherited_model_before_creation(self):
+        task = self.submit()
+        self.supervisor.tick()
+        expected = {"providerID": "test", "id": "foreman-model"}
+        self.assertEqual(self.store.task(task["id"])["runtime_model"], expected)
+        self.assertEqual(self.runtime.sessions[task["session_id"]]["task"]["runtime_model"], expected)
+        with Store(self.root / "state", self.checkouts) as reopened:
+            self.assertEqual(reopened.task(task["id"])["runtime_model"], expected)
+
+    def test_model_read_failure_reserves_without_creating_or_prompting(self):
+        task = self.submit()
+        def fail(_):
+            raise OSError("model unavailable")
+        self.runtime.dispatch_model = fail
+        self.supervisor.tick()
+        self.assertEqual(self.store.task(task["id"])["state"], "uncertain")
+        self.assertEqual(self.runtime.sessions, {})
+        self.assertEqual(self.runtime.prompts, [])
+
+    def test_inspection_preserves_sanitised_runtime_failure_reason(self):
+        from foreman_supervisor import RuntimeFailure
+        task = self.submit()
+        self.store.claim()
+        def fail(_):
+            raise RuntimeFailure("Native session model mismatch")
+        self.runtime.inspect = fail
+        self.supervisor.tick()
+        state = self.store.task(task["id"])
+        self.assertEqual(state["state"], "uncertain")
+        self.assertIn("Native session model mismatch", state["detail"])
+        self.assertEqual(self.runtime.prompts, [])
+
+    def test_setup_preserves_sanitised_runtime_failure_reason(self):
+        from foreman_supervisor import RuntimeFailure
+        task = self.submit()
+        def fail(_):
+            raise RuntimeFailure("Native session permissions mismatch")
+        self.runtime.create = fail
+        self.supervisor.tick()
+        self.assertIn("Native session permissions mismatch", self.store.task(task["id"])["detail"])
+        self.assertEqual(self.runtime.prompts, [])
+
+    def test_unknown_runtime_exception_is_not_exposed_to_the_chat(self):
+        task = self.submit()
+        self.store.claim()
+        def fail(_):
+            raise OSError("private-error-sentinel")
+        self.runtime.inspect = fail
+        self.supervisor.tick()
+        self.assertNotIn("private-error-sentinel", self.store.task(task["id"])["detail"])
 
 
 if __name__ == "__main__":

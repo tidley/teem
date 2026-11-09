@@ -10,6 +10,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(config["$schema"], "https://opencode.ai/config.json")
         self.assertEqual(config["default_agent"], "teem_foreman")
         self.assertFalse(config["warming"])
+        self.assertTrue(config["experimental"]["todo"])
         self.assertNotIn("model", config)
         self.assertNotIn("mcp", config)
         agent = config["agents"]["teem_foreman"]
@@ -18,7 +19,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(agent["permissions"][0], {"action": "*", "resource": "*", "effect": "deny"})
         allowed = {r["action"] for r in agent["permissions"] if r["effect"] == "allow"}
         self.assertFalse(allowed & {"edit", "shell", "subagent", "opencode_session_move"})
-        self.assertTrue({"teem_foreman_submit", "teem_foreman_status", "teem_foreman_ack"} <= allowed)
+        self.assertTrue({"teem_foreman_submit", "teem_foreman_status", "teem_foreman_ack", "teem_foreman_plan", "todowrite"} <= allowed)
         self.assertIn("approval", agent["system"])
 
 

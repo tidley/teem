@@ -8,16 +8,13 @@ import tempfile
 import tomllib
 import unittest
 from unittest.mock import patch
-import uuid
-
-from codr_foreman import DeliveryUnknown, Rejected
-from foreman_plugin import load_config, mcp, service_unit, bind_from_herdr, Notifier
+from foreman_plugin import load_config, mcp, service_unit, bind_from_herdr
 from foreman_supervisor import Store, Invalid
 
 
 class PluginTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="foreman-plugin-", dir="/tmp/opencode")
+        self.temp = tempfile.TemporaryDirectory(prefix="foreman-plugin-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.store = Store(self.root / "state", [])
@@ -36,10 +33,22 @@ class PluginTests(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         self.assertEqual(len(responses), 2)
         self.assertEqual(responses[0]["result"]["protocolVersion"], "2024-11-05")
-        self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "teem")
+        self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "Teem")
         tools = {t["name"]: t for t in responses[1]["result"]["tools"]}
-        self.assertEqual(set(tools), {"foreman_submit", "foreman_status", "foreman_ack"})
+        self.assertEqual(set(tools), {"foreman_submit", "foreman_status", "foreman_ack", "foreman_plan", "foreman_workflow"})
         self.assertNotIn("foreman", tools["foreman_submit"]["inputSchema"]["properties"])
+        workflow_args = tools['foreman_workflow']['inputSchema']['properties']
+        self.assertEqual(set(workflow_args), {'workflow_id', 'project', 'scope', 'prompt', 'title', 'workers'})
+
+    def test_plan_tool_is_bound_and_returns_supervisor_progress(self):
+        response, = self.exchange({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {
+            "name": "foreman_plan", "arguments": {"items": [{"id": "check", "content": "Check results", "status": "pending"}]}}})
+        data = json.loads(response["result"]["content"][0]["text"])
+        self.assertEqual(data["todos"], [{"content": "Check results", "status": "pending"}])
+        self.assertEqual(self.store.db.execute("SELECT foreman FROM plans").fetchone()["foreman"], "ses_foreman")
+        response, = self.exchange({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {
+            "name": "foreman_plan", "arguments": {"foreman": "ses_other", "items": []}}})
+        self.assertTrue(response["result"]["isError"])
 
     def test_status_uses_fixed_foreman_binding(self):
         result, = self.exchange({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -47,6 +56,8 @@ class PluginTests(unittest.TestCase):
         data = json.loads(result["result"]["content"][0]["text"])
         self.assertEqual(data["foreman"], "ses_foreman")
         self.assertEqual(data["limits"], {"worker": 2, "reviewer": 2})
+        self.assertEqual(data["completion_transport"], "native-runtime")
+        self.assertNotIn("notifications_configured", data)
 
     def test_mcp_rejects_unregistered_foreman(self):
         with self.assertRaises(Invalid):
@@ -75,16 +86,14 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(calls, [["/example/herdr", "agent", "get", "w3:p8"]])
         self.assertEqual(self.store.binding("ses_test")["terminal_id"], "term_test")
 
-    def test_notification_binding_must_match_native_session_and_terminal(self):
+    def test_binding_does_not_silently_replace_a_terminal(self):
         with self.assertRaises(Invalid):
-            self.store.bind("ses_foreman", "term_foreman", dict(
-                codr="codr", config="/example/config", bridge_account="a" * 64,
-                session_key=json.dumps(["herdr:opencode", "opencode", "id", "ses_other"]), terminal_id="term_foreman"))
+            self.store.bind("ses_foreman", "term_other")
 
     def test_service_unit_preserves_explicit_paths_and_has_no_enable_side_effect(self):
         unit = service_unit(self.root / "space % config.toml")
         self.assertIn("Restart=on-failure", unit)
-        self.assertIn("Description=TEEM headless task supervisor", unit)
+        self.assertIn("Description=Teem headless task supervisor", unit)
         self.assertIn("UMask=0077", unit)
         self.assertIn("space %% config.toml", unit)
         self.assertIn(" serve", unit)
@@ -94,7 +103,7 @@ class PluginTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         manifest = tomllib.loads((root / "herdr-plugin.toml").read_text())
         self.assertEqual(manifest["id"], "local.teem")
-        self.assertEqual(manifest["name"], "TEEM")
+        self.assertEqual(manifest["name"], "Teem")
         action = next(a for a in manifest["actions"] if a["id"] == "status")
         self.assertEqual(action["command"][-1], "open-status")
         self.assertEqual([p["placement"] for p in manifest["panes"]], ["popup"])
@@ -124,104 +133,20 @@ class PluginTests(unittest.TestCase):
         self.assertIn("disabled", result.stdout)
 
 
-class NotificationTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="foreman-event-", dir="/tmp/opencode")
-        self.addCleanup(self.temp.cleanup)
-        self.store = Store(Path(self.temp.name) / "state", [])
-        self.addCleanup(self.store.close)
-        self.store.bind("ses_foreman", "term_foreman", dict(
-            codr="codr", config="/example/config.toml", bridge_account="a" * 64,
-            session_key=json.dumps(["herdr:opencode", "opencode", "id", "ses_foreman"]), terminal_id="term_foreman"))
-        self.event = str(uuid.uuid4())
-        with self.store.db:
-            self.store.db.execute("INSERT INTO events (id,task_id,foreman,request_id) VALUES (?,?,?,?)",
-                                  (self.event, "task-test", "ses_foreman", str(uuid.uuid4())))
-        self.submits = []
-        self.receipts = []
-        self.mode = "accepted"
-        case = self
+    def test_teem_imports_without_codr_modules(self):
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run([sys.executable, "-B", "-c",
+                                 "import sys; sys.modules['codr_foreman'] = None; "
+                                 "import foreman_plugin, foreman_supervisor, foreman_runtime"],
+                                cwd=root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((root / "codr_foreman.py").exists())
 
-        class Client:
-            def __init__(self, **kwargs):
-                pass
-
-            def submit(self, request_id, text):
-                case.submits.append((request_id, text))
-                if case.mode == "unknown":
-                    raise DeliveryUnknown("Lost response")
-                if case.mode == "rejected":
-                    raise Rejected("Rejected")
-                return {"status": "queued"}
-
-            def receipt(self, request_id):
-                case.receipts.append(request_id)
-                return {"accepted": case.mode == "accepted"}
-
-        self.notifier = Notifier(client_factory=Client)
-
-    def test_accepted_wake_is_not_event_acknowledgement(self):
-        self.notifier.deliver(self.store)
-        self.notifier.deliver(self.store)
-        self.assertEqual(len(self.submits), 1)
-        event, = self.store.events("ses_foreman")
-        self.assertEqual(event["state"], "queued")
-        self.assertFalse(event["acked"])
-
-    def test_unknown_send_is_never_automatically_repeated(self):
-        self.mode = "unknown"
-        self.notifier.deliver(self.store)
-        self.notifier.deliver(self.store)
-        self.assertEqual(len(self.submits), 1)
-        self.assertEqual(self.store.events("ses_foreman")[0]["state"], "uncertain")
-
-    def test_crash_after_attempt_reconciles_receipt_only(self):
-        with self.store.db:
-            self.store.db.execute("UPDATE events SET state='attempting' WHERE id=?", (self.event,))
-        self.notifier.deliver(self.store)
-        self.assertEqual(self.submits, [])
-        self.assertEqual(len(self.receipts), 1)
-        self.assertEqual(self.store.events("ses_foreman")[0]["state"], "queued")
-
-    def test_explicit_rejection_is_visible_and_not_retried(self):
-        self.mode = "rejected"
-        self.notifier.deliver(self.store)
-        self.notifier.deliver(self.store)
-        self.assertEqual(len(self.submits), 1)
-        self.assertEqual(self.store.events("ses_foreman")[0]["state"], "rejected")
-
-    def test_old_uncertain_events_cannot_starve_new_completions(self):
-        self.mode = "unknown"
-        with self.store.db:
-            self.store.db.execute("UPDATE events SET state='uncertain'")
-            for i in range(32):
-                self.store.db.execute("INSERT INTO events (id,task_id,foreman,request_id,state) VALUES (?,?,?,?,?)",
-                                      (str(uuid.uuid4()), f"old-{i}", "ses_foreman", str(uuid.uuid4()), "uncertain"))
-            self.store.db.execute("INSERT INTO events (id,task_id,foreman,request_id) VALUES (?,?,?,?)",
-                                  (str(uuid.uuid4()), "new-completion", "ses_foreman", str(uuid.uuid4())))
-        self.notifier.deliver(self.store)
-        self.assertEqual(len(self.submits), 1)
-        self.assertIn("new-completion", self.submits[0][1])
-
-    def test_unconfigured_foreman_events_do_not_starve_configured_foreman(self):
-        self.store.bind("ses_unconfigured", "term_unconfigured")
-        with self.store.db:
-            self.store.db.execute("UPDATE events SET foreman='ses_unconfigured'")
-            for i in range(40):
-                self.store.db.execute("INSERT INTO events (id,task_id,foreman,request_id) VALUES (?,?,?,?)",
-                                      (str(uuid.uuid4()), f"unconfigured-{i}", "ses_unconfigured", str(uuid.uuid4())))
-            self.store.db.execute("INSERT INTO events (id,task_id,foreman,request_id) VALUES (?,?,?,?)",
-                                  (str(uuid.uuid4()), "configured-task", "ses_foreman", str(uuid.uuid4())))
-        self.notifier.deliver(self.store)
-        self.assertEqual(len(self.submits), 1)
-
-    def test_uncertain_receipt_checks_have_persisted_backoff(self):
-        self.mode = "unknown"
-        with self.store.db:
-            self.store.db.execute("UPDATE events SET state='uncertain'")
-        self.notifier.deliver(self.store)
-        self.notifier.deliver(self.store)
-        self.assertEqual(len(self.receipts), 1)
+    def test_cli_no_longer_accepts_codr_notification_configuration(self):
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run([sys.executable, "-B", str(root / "foreman_plugin.py"), "bind", "--help"],
+                                capture_output=True, text=True, check=True)
+        self.assertNotIn("notification-file", result.stdout)
 
 
 if __name__ == "__main__":

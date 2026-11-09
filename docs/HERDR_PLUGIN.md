@@ -1,4 +1,4 @@
-# TEEM Herdr plugin
+# Teem Herdr plugin
 
 Local MVP, version 0.1.0. This is original code, not a copy of the private PAVE agent system.
 Repository setup does not authorise model tasks. See `docs/PILOT.md` for the local pilot and its activation gate.
@@ -6,17 +6,18 @@ Herdr 0.9.1 accepted the original manifest in a temporary, isolated plugin regis
 
 ## What it provides
 
-- One explicitly registered Foreman conversation, visible through Herdr and Codr's existing White Noise mapping.
+- One explicitly registered Foreman conversation in Herdr, with optional independent Codr/White Noise phone access.
 - A Python supervisor with persistent SQLite task and event records.
-- Two implementation slots and two reviewer slots across the entire supervisor, not per conversation.
+- Two implementation slots and two reviewer slots per managed task. Legacy tasks share two slots per role.
 - Headless OpenCode sessions. Workers do not create Herdr panes or additional Codr chats.
 - Structured MCP delegation tools bound to one registered Foreman session.
 - Caller-retained task UUIDs. Duplicate admission returns the original task instead of repeating work.
 - Separate queue acceptance, native execution, terminal outcome, notification acceptance, and event acknowledgement.
-- Existing sparse checkout support for workers. Review requires a clean, complete checkout at a fixed commit.
+- Existing sparse checkout support for legacy workers. Managed workflows prepare complete clones and review exact candidate trees without commits.
 
 Native `succeeded` means the execution ended with a text result. It is not an engineering PASS.
-The plugin does not parse review prose into an approval or merge code.
+The plugin does not parse review prose into an approval or merge code. Managed
+reviews require a strict snapshot-bound JSON verdict and independently checked gates.
 
 ## Requirements
 
@@ -25,11 +26,11 @@ The plugin does not parse review prose into an approval or merge code.
 - OpenCode's current `/api/session` protocol, as inspected in the local 2.1.4 source.
   This is not the older `/session` SDK protocol. Other OpenCode versions need contract qualification.
 - A configured OpenCode background service and an explicitly selected model.
-- Existing authorised Git checkout roots. Do not assign a checkout with unrelated changes.
-- Codr's optional local queue interface for automatic Foreman completion wakes.
+- Existing authorised checkout roots for manual tasks, or an explicit managed-project policy.
 
 The plugin never launches, elects, replaces, or restarts OpenCode's background service.
 Python uses only its standard library. Tests do not use live models or services.
+Teem does not require Codr, White Noise, a bridge account, or a Codr local control socket.
 
 ## Explicit local setup
 
@@ -71,15 +72,17 @@ Do not overwrite an existing OpenCode configuration file.
 
 ```json
 {
+  "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "servers": {
-      "foreman": {
+      "teem": {
         "type": "local",
         "command": [
           "python3", "-B", "/home/tom/code/teem/foreman_plugin.py",
           "--config", "/absolute/plugin/config.toml",
           "mcp", "--foreman", "ses_EXACT_REGISTERED_SESSION"
-        ]
+        ],
+        "codemode": false
       }
     }
   }
@@ -91,8 +94,14 @@ Check the model runtime's configuration reload requirements before use.
 The MCP tools appear with their own schemas and descriptions. They do not depend on an `AGENTS.md` role instruction.
 
 - `foreman_submit`: provide a retained UUID, role, checkout, full base commit, relative file scope, and assignment.
-- `foreman_status`: read tasks, exact native session IDs, results, and unacknowledged events.
+- `foreman_status`: read tasks, exact native session IDs, results, unacknowledged events, and current `progress.todos`.
 - `foreman_ack`: acknowledge one event after consuming its result. This does not approve code.
+- `foreman_plan`: define this conversation's ordered checklist, linking execution items to retained task UUIDs.
+- `foreman_workflow`: supply a configured project alias, retained workflow UUID, scope and acceptance criteria. No checkout paths or base hashes are needed.
+
+Status also lists approval card IDs, worker permission IDs, and relay states. There is no
+model-callable approval tool. The Foreman must not answer cards on the human's behalf
+or treat a conversational “yes” as a native permission decision.
 
 Submission returns after durable queue admission. The supervisor performs execution separately.
 A Foreman should finish its dispatch response rather than wait in a synchronous polling loop.
@@ -105,35 +114,243 @@ This MVP supplies delegation tools, not mandatory routing of every conversationa
 This is a same-user local integration, not protection against arbitrary local processes.
 Background sessions deny MCP tools and delegation through their runtime permission rules.
 
-## Codr notifications
+## Managed workflows and routine checks
 
-Automatic completion wakes are optional. Without a Codr binding, completion events remain available through the status tool.
-After inspection, prepare a private JSON file with these exact fields:
+Add a machine-local project policy to the plugin configuration, not to worker-editable
+source. Only explicitly configured projects can run managed work:
+
+```toml
+[projects.pilot]
+path = "/absolute/project/root"
+max_revisions = 1
+
+[[projects.pilot.checks]]
+name = "tests"
+kind = "test"
+argv = ["python3", "-B", "-m", "unittest", "discover", "-s", "tests", "-v"]
+cwd = "."
+timeout = 300
+output_limit = 1048576
+```
+
+The operator must approve these commands and trust the project's test/build scripts.
+Commands use exact argv, not a shell. No model argument can choose a command, cwd,
+timeout or revision budget. Shell launchers and obvious publication/destructive
+executables are rejected. This does not make arbitrary test code safe: approved code
+runs as the same user and can have side effects. The runner is not an OS sandbox.
+Do not configure production deployment, paid services, secrets, hardware actions or
+untrusted fork scripts as routine checks. Environment forwarding is restricted, but
+the user's filesystem is not isolated.
+
+Each project requires at least one test check; up to eight test/build/inspection checks
+run in order, stopping on failure. Configure build commands only after their central
+fastbuild adapter, target requirements and resource use have been qualified. The runner
+reads storage policy and refuses an unavailable required mount. It does not invent
+cache mappings or relocate existing build directories. Check logs/receipts are private
+persistent evidence, not regenerable build caches. Test exit zero is check evidence,
+not a guarantee of coverage or correctness.
+
+For an authorised task, Foreman calls `foreman_workflow` with project alias, scope and
+acceptance criteria, then remains available for chat. The exact native Foreman project
+must match the configured source. The supervisor chooses clean source HEAD and creates
+separate private local clones beneath its state directory. It copies local root
+instructions when available but never copies an excluded Foreman `opencode.json`.
+It does not use worktrees, rewrite source history, create source commits, discard
+dirty checkouts, fetch a network remote, or clean up old work automatically.
+Dirty sources and submodules are explicit blockers. Large-repository and platform
+qualification remain project-specific.
+
+Workflow progression is:
+
+1. Queue one or two implementation workers with inherited Foreman model. Optional
+   `workers` assignments each contain `scope` and `prompt`. Their file scopes must
+   be disjoint and inside the overall task scope. Use one worker if the work cannot
+   be split safely; two workers never edit the same checkout.
+2. Freeze its actual scoped changes, including new/binary/deleted files, into a binary
+   patch and Git tree with a SHA-256 manifest. Git tree objects are not commits.
+3. For a two-worker task, validate each contribution against its own scope, then
+   apply both verified patches to a new combined checkout. An apply conflict blocks
+   the task without discarding either contribution. Freeze that combined candidate.
+   Materialise a separate complete candidate and launch the approved checks
+   asynchronously. Workers need not request shell permission for those checks.
+4. Verify the candidate is unchanged and bind check receipts to that snapshot/command.
+5. Queue two independent read-only reviews in separate complete candidate checkouts.
+   Reviewers read the exact diff at `.git/teem-review.patch` and the current candidate,
+   not only base HEAD. Their trees are
+   validated before/after execution. Their JSON verdict must name the exact snapshot.
+6. On failed checks or demonstrated findings, start a fresh revision worker from the
+   prior snapshot, including bounded hash-verified failure diagnostics in its prompt,
+   then rerun checks and both reviews. The configured zero-to-three
+    revision budget bounds this. Revisions use one worker on the combined candidate
+    so cross-part fixes remain consistent. One revision permits at most three worker
+    executions (two initial, one revision) and four reviewer executions per task.
+7. Report `ready` only when the exact candidate passes all configured checks and both
+   reviews. The patch remains local and uncommitted. No integration, merge, publication,
+   deployment or release is performed. Multiple workflows are not automatically combined.
+
+Each managed task has independent two-worker/two-reviewer caps. Additional work can
+run its own team rather than waiting for another task's agent slots. Uncertain agents
+retain their task slots. Legacy tasks keep a shared two-per-role pool. Up to two workflows can run checks
+at once. Project policy is recorded at admission; changing/removing it stops subsequent
+progression and queued managed launches after configuration reload. It does not cancel
+already running native agents or approved checks. Do not treat a new task UUID as
+permission to bypass a stopped workflow or user budget.
+
+Checks clean up their owned process group on success as well as failure; they do not
+terminate unrelated processes. This is still not containment for untrusted programs
+that escape their process group or access other same-user files.
+
+Check launch and preparation markers are durable. Unknown side-effect windows retain
+all paths/evidence without automatic replay. A missing/late receipt or uncertain native
+task can reconcile by reads; no replacement runs are launched merely to recover it.
+Dismissed approvals and interrupted filesystem preparation may need manual inspection.
+Status includes each round's paths, snapshot, check evidence, reviewer IDs/verdicts and
+specific blocker. Review findings and receipts are preserved even after revision.
+Readiness is policy-specific and not a substitute for combined integration verification.
+
+The workflow itself appears automatically in supervisor-backed progress. It shows
+implementation, checks, reviews, revision/uncertainty and final candidate qualification.
+Manual checklist entries are preserved. Finished workflows leave the current-work
+display; their results and blockers remain in full status history.
+Supply an optional short `title` at admission for the user-facing checklist. Existing
+workflows get a readable title derived from their acceptance prompt without changing
+the immutable request. Workflow UUIDs remain in status metadata, not generated labels.
+Active workflows show only the current round's workers, approved checks, correctness
+reviewer, and tests/scope reviewer separately. A finished reviewer stays verdict-pending
+until the controller records its parsed snapshot-bound result.
+
+New managed agents can also report their own native todos. Where no project config
+would be overwritten, Teem creates a private ignored OpenCode config enabling only
+native todos and disabling warming. It never copies Foreman MCP bindings. Config-edit
+tasks and existing unsupported project configs use phase-only progress instead.
+The benign `todowrite` capability is recorded in the new task's immutable request;
+old native sessions are not rewritten. Edit scope and shell/reviewer restrictions
+remain unchanged.
+
+Teem reads completed native `todowrite` calls from the exact reserved session, at most
+once per five seconds, and collects a final report after termination. It does not
+parse prose into a plan. Read failures retain the last observed report rather than
+inventing completion. The checklist shows up to eight reported detail entries per
+current-round agent, explicitly labelled as agent-reported. These checkboxes are not
+test, review or workflow gate evidence. Native progress polling and todo refresh
+remain separate from the actual model execution state.
+
+## Live checklist
+
+Foreman registers an ordered list through `foreman_plan`. Each item has a stable short
+`id` and a single-line `content` label. An execution item also has its retained
+`task_id`; its status is supplied by the supervisor. An unlinked planning item has an
+explicit `status`: `pending`, `in_progress`, `completed`, or `cancelled`.
+
+For example, a linked implementation item can be followed by separate unlinked test
+verification and review-evidence items. Linked task UUIDs can be registered before
+submission. Missing tasks show “not submitted or unavailable.” Cross-Foreman links
+and model-supplied statuses on linked items are rejected. Replacing a plan must
+preserve unrelated planning items. An empty list explicitly clears the managed plan.
+Existing conversations are not subscribed automatically and their todos are untouched.
+
+The authoritative snapshot is `foreman_status.progress`. Its `items` distinguish
+`supervisor` execution from manual `foreman-plan` state. Its `todos` contain native
+todo-compatible content and statuses. Worker success produces “execution ended;
+tests/review not implied.” Failed/interrupted work is not shown as completed.
+Foreman must assess actual evidence before updating manual verification items.
+
+This OpenCode version has no external todo-write endpoint. The passive TUI plugin
+reads an atomic, mode-0600 `progress.json` under the configured private state directory.
+The supervisor writes it each loop; the TUI reads it once per second. No model call,
+synthetic input or fabricated tool history is needed. A stale observation is labelled
+after 15 seconds. This local file integration needs the TUI on the same host as Teem.
+
+To install, merge these entries into `~/.config/opencode/cli.json` in this order,
+preserving other settings/plugins (use your actual absolute paths):
 
 ```json
 {
-  "codr": "/home/tom/.local/bin/herdr-white-noise-bridge",
-  "config": "/home/tom/.config/herdr-white-noise-bridge/config.toml",
-  "bridge_account": "EXACT_64_HEX_ACCOUNT_FROM_CODR",
-  "session_key": "[\"herdr:opencode\",\"opencode\",\"id\",\"ses_EXACT_REGISTERED_SESSION\"]",
-  "terminal_id": "EXACT_FOREMAN_TERMINAL_ID"
+  "plugins": [
+    "-opencode.sidebar.todo",
+    { "package": "/absolute/teem/ui/teem-progress", "options": {
+      "stateFile": "/absolute/private/state_dir/progress.json"
+    } }
+  ]
 }
 ```
 
-From the focused Foreman pane inside Herdr, run:
+The native Todo feature is disabled in this TUI configuration to prevent a second,
+stale checklist. The replacement uses real native todos for all unbound conversations,
+including their revert boundary; only subscribed Teem conversations use passive rows.
+Other sidebar features are unchanged. Valid CLI changes reload without restarting
+OpenCode's backend. The plugin adds no server, credentials or Python dependency.
 
-```sh
-python3 -B /home/tom/code/teem/foreman_plugin.py \
-  --config /absolute/plugin/config.toml bind \
-  --notification-file /absolute/private/notification.json
+Progress changes and individual managed-agent completions do not wake Foreman. Their
+event receipts remain inspectable and unacknowledged (`passive` is not consumed or
+approved). When a workflow reaches `ready`, `blocked`, or `needs_attention`, the
+supervisor atomically records its final state and one native outcome event. Foreman
+reads that workflow's evidence, gives one concise result summary, and acknowledges
+the outcome event. No progress rendering or new worker run is requested. This final
+summary can queue behind a user turn; individual stages still cost no Foreman turns.
+An uncertain notification is reconciled by exact native ID reads, never resent.
+
+`foreman_status.progress.latest_result` also keeps one terminal result outside the
+active checklist. The TUI shows its readable title and completed/blocked/needs-attention
+summary, including “not integrated” for ready candidates. This remains visible when
+active todos clear. New outcomes are ordered by recorded finish time. Older finished
+workflows without that timestamp use admission time as a historical fallback; they
+are displayed without backfilled notifications or any task replay. No historical
+request, candidate, check receipt or reviewer verdict is rewritten.
+
+Legacy direct task completions still notify Foreman, without a new todo-refresh request.
+Unsent old progress inputs are superseded, not replayed. Already admitted or uncertain
+inputs remain history; old payload bytes and receipts are preserved. The updated
+Foreman profile says not to follow obsolete refresh instructions. No existing inbox
+inputs or conversation messages are deleted. `progress_delivery` is legacy history.
+
+This TUI display is not a native todo tool call. It is not automatically visible in
+White Noise; that independent optional viewer is not contacted or changed.
+
+## Inherited dispatch model
+
+New worker and reviewer sessions inherit the exact bound Foreman's selected provider,
+model, and optional variant at dispatch. The supervisor records `runtime_model` before
+session creation. Reconciliation uses that recorded selection even if Foreman switches
+models later. A missing or invalid selection leaves a reservation uncertain without
+creating a worker or repeating a prompt. There is no model override in the task tool.
+
+The configured `model` remains the fallback for pre-upgrade task records without a
+recorded selection. It is not a separate model choice for new workers. Do not change
+that legacy fallback while reconciling old uncertain/live tasks. Existing native
+sessions are not rewritten. Model inheritance does not broaden task or spending
+authority, checkout authorisation, concurrency, shell permissions, or review gates.
+
+## Native completion events
+
+The supervisor sends completion events directly to the exact Foreman's OpenCode session through `/api/session/{id}/synthetic`.
+It uses queued delivery and explicit resume. It does not type into a terminal or replace a desktop draft.
+The runtime queues the event without steering an active model step.
+Each event has one persisted request UUID and a deterministic native message ID.
+The event contains task/event identifiers, not raw worker output. Foreman retrieves the recorded result through its tools.
+Native admission means the runtime accepted input. It does not prove the Foreman executed or consumed that input.
+Only `foreman_ack` closes an event. Uncertain delivery triggers exact message/inbox reads, never automatic resend.
+Native events can resume the Foreman and use model tokens when supervision is enabled.
+
+Existing pre-upgrade event records receive the `legacy-codr` transport marker.
+Their original states, acknowledgements, and IDs remain intact. The supervisor never replays them through the native path.
+Old database columns remain for preservation, but Teem no longer reads Codr notification configuration.
+Inspect and acknowledge historical results manually. The obsolete `--notification-file` option is removed.
+
+## Independent optional integrations
+
+```text
+Herdr ↔ Foreman ↔ Teem supervisor ↔ Workers/reviewers
+           ↕
+     Codr/White Noise — optional
 ```
 
-The session key and terminal must match the native Foreman binding.
-Use Codr's existing snapshot and queue setup to obtain these values. Do not infer them from names.
-The supervisor sends one wake through `codr_foreman.Client`. It never falls back to terminal writes.
-Wakes contain event/task IDs, not raw worker output. Foreman retrieves results through its tools.
-Codr's forwarding/readiness controls still apply. Queue acceptance is not proof that Foreman consumed an event.
-Only `foreman_ack` closes an event. An uncertain notification is reconciled by receipt reads, never automatic resend.
+Teem does not enable, configure, restart, or depend on Codr/White Noise.
+Codr/White Noise can share the Foreman conversation through their existing integration, independently of Teem.
+Without Teem, use the ordinary Build agent and existing Herdr/Codr behaviour.
+To stop Teem delegation in the pilot, keep its supervisor stopped, disable its project-local MCP connection, and select Build.
+Restore `default_agent` to `build` if you no longer want the pilot's opt-in Foreman profile as the default.
+Stopping the supervisor does not cancel already running native agents.
 
 The existing phone submission and desktop draft race remains outside this MVP.
 The plugin shares the existing conversation. It does not provide a new atomic mobile/desktop input router.
@@ -142,15 +359,22 @@ The plugin shares the existing conversation. It does not provide a new atomic mo
 
 Git worktrees share repository objects but normally materialise all tracked files.
 Sparse checkout reduces the materialised file set. It does not make every dependency or test available.
-This plugin accepts existing sparse checkouts. It does not create, alter, clean up, or delete them.
+The legacy task API accepts existing sparse checkouts. Managed workflows create new
+complete clones; neither path alters or deletes existing user checkouts.
 
 Record a narrow task scope and immutable base revision. Each live task owns its assigned checkout exclusively.
 Sparse tasks report `sparse: true`. Do not classify missing-dependency test failures as code failures or as passing checks.
-Before review, produce a fixed commit through the project's authorised source workflow.
+For a legacy manual review, produce a fixed commit through the project's authorised source workflow.
 Assign reviewers complete, clean checkouts at that commit. Two concurrent reviewers need separate checkout roots in this MVP.
 Run full verification against the combined result before integration. Do not merge sparse-task results merely because individual agents finished.
 
 Workers can edit only their declared relative scope through built-in edit tools. Shell commands require human approval.
+New worker sessions allow external-directory access within `/mnt/fastbuild/`, including
+the required storage instructions and nested build-output directories. This exception
+does not allow other external directories, unscoped edits, or unattended shell commands.
+Use the central storage adapters; this permission does not authorise changing or deleting
+other projects' build outputs. Reviewer permissions and global OpenCode defaults are unchanged.
+Existing native sessions are not updated or replayed when this worker template changes.
 Reviewers can use read, glob, and grep. They cannot edit, run shell commands, delegate, or use MCP tools.
 These restrictions are runtime permissions, not an operating-system filesystem sandbox.
 Human shell approval can permit actions outside those tool restrictions. Never treat shell approval as routine unattended consent.
@@ -174,8 +398,40 @@ Reconciliation reads the exact session, prompt message, and inbox IDs.
 An idle session without the expected native input is uncertain, not successful.
 Changed native identity or permissions also retain the reservation for inspection.
 
-If a task needs permission or an answer, status reports the block and native session ID.
-Inspect that session with OpenCode before approving anything. There is no automatic permission approval tool.
+### Worker approval cards
+
+The supervisor relays pending worker tool permissions to the exact bound Foreman
+conversation as native question forms. Each card shows the task, worker session,
+checkout, original permission, and exact tool input. Choose **Approve once** or
+**Reject worker batch** in the card. Approval permits only the selected request.
+Native OpenCode rejection declines all pending permissions in that worker session
+and can end its current step. Teem cancels the other stale cards on its next check.
+There is no permanent approval option or default answer.
+This does not send a model prompt, resume the Foreman, or require Codr/White Noise.
+The ordinary Foreman chat stays available. Optional clients must support native forms.
+
+Before forwarding a human answer, Teem rechecks the worker identity, original task
+input, pending permission, and tool input. A changed or vanished request invalidates
+its card. A duplicate poll or supervisor restart does not create another card.
+An uncertain create response is reconciled with reads. If the native API confirms
+that the card is absent, Teem can restore the same card only when its exact worker
+permission and tool input remain pending and no permission reply was attempted.
+This asks the human again; it does not reuse a lost answer or replay a task.
+Recovery attempts have a 30-second backoff. A durable marker is written before any
+permission reply. An uncertain permission reply is never retried, and its card is
+not automatically restored. Old uncertain rows remain conservative on upgrade.
+
+Check `approvals` in status and inspect the exact native worker request if reply
+delivery is uncertain or a card is dismissed. Forms are runtime-owned: project
+service eviction or backend restart can remove them. Cancelling a card does not
+reject or cancel the worker's permission.
+
+The form API is a same-user interface, not authenticated proof of a particular
+person. Do not give the Foreman shell/API access that could answer its own cards.
+Teem adds no model-callable reply tool and never interprets model text as consent.
+
+Worker question forms and unsupported non-tool permissions still require inspection
+of the native worker session. Status reports that block and the exact session ID.
 Stopping the supervisor does not cancel backend-owned OpenCode execution.
 Interrupt the exact native session through OpenCode when cancellation is required.
 After a worker has no accepted input, an uncertain reservation needs manual investigation.

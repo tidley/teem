@@ -1,7 +1,21 @@
 # Copy to the directory printed by `herdr plugin config-dir local.teem`.
-# Explicitly authorise checkout roots and a model before enabling the service.
+# Explicitly authorise checkout roots and execution scope before enabling the service.
 enabled = false
 state_dir = "~/.local/state/teem"
 registry = "~/.local/state/opencode/service.json"
+# Legacy task fallback only; new workers/reviewers inherit the native Foreman model.
 model = "openai/gpt-6.1-sol"
 allowed_checkouts = []
+
+# Optional managed project policy. Enable only for trusted projects whose checks
+# are approved for unattended execution as your user. No shell command text.
+# [projects.example]
+# path = "/absolute/project/root"
+# max_revisions = 1
+# [[projects.example.checks]]
+# name = "tests"
+# kind = "test"
+# argv = ["python3", "-B", "-m", "unittest", "discover", "-s", "tests", "-v"]
+# cwd = "."
+# timeout = 300
+# output_limit = 1048576

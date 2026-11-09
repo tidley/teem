@@ -1,4 +1,4 @@
-"""TEEM Herdr plugin commands and fixed-binding Foreman tools."""
+"""Teem Herdr plugin commands and fixed-binding Foreman tools."""
 
 import argparse
 import fcntl
@@ -11,9 +11,13 @@ import sys
 import time
 import tomllib
 
-from codr_foreman import Client, DeliveryUnknown, Rejected
 from foreman_runtime import OpenCode
-from foreman_supervisor import Invalid, Store, Supervisor
+from foreman_approvals import ApprovalRelay
+from foreman_progress import ProgressPublisher
+from foreman_workflows import WorkflowEngine, normalise_projects
+from foreman_checks import CheckRunner
+from foreman_agent_progress import AgentTodoReader
+from foreman_supervisor import Invalid, Store, Supervisor, Notifier
 
 
 def load_config(path):
@@ -27,15 +31,16 @@ def load_config(path):
     config["state_dir"] = str(Path(config["state_dir"]).expanduser())
     if not Path(config["state_dir"]).is_absolute():
         raise Invalid("state_dir must be absolute")
-    paths = config.get("allowed_checkouts")
+    paths = config.setdefault("allowed_checkouts", [])
     if not isinstance(paths, list) or any(not isinstance(p, str) or not Path(p).expanduser().is_absolute() for p in paths):
         raise Invalid("List each authorised checkout root explicitly")
     if config["enabled"] and (not isinstance(config.get("registry"), str) or not config.get("model")):
         raise Invalid("Enabled supervision needs an explicit registry path and model")
+    config['projects'] = normalise_projects(config.get('projects', {}))
     return config
 
 
-def bind_from_herdr(store, notification=None, *, run=subprocess.run):
+def bind_from_herdr(store, *, run=subprocess.run):
     pane = os.environ.get("HERDR_PANE_ID")
     if os.environ.get("HERDR_ENV") != "1" or not pane:
         raise Invalid("Bind from the focused Foreman pane inside Herdr")
@@ -49,50 +54,11 @@ def bind_from_herdr(store, notification=None, *, run=subprocess.run):
         if (agent["agent"] != "opencode" or native["agent"] != "opencode"
                 or native["kind"] != "id" or native["source"] != "herdr:opencode"):
             raise ValueError()
-        store.bind(native["value"], agent["terminal_id"], notification)
+        store.bind(native["value"], agent["terminal_id"])
         return {"foreman": native["value"], "terminal_id": agent["terminal_id"],
-                "notifications": bool(notification)}
+                "completion_transport": "native-runtime"}
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
         raise Invalid("Cannot bind the focused pane to an exact native OpenCode session") from None
-
-
-class Notifier:
-    def __init__(self, *, client_factory=Client):
-        self.client_factory = client_factory
-
-    def deliver(self, store):
-        rows = store.db.execute("""
-            SELECT events.* FROM events JOIN foremen ON foremen.id=events.foreman
-            WHERE events.acked=0 AND foremen.notification IS NOT NULL
-              AND (events.state='pending' OR
-                   (events.state IN ('attempting','uncertain') AND events.next_receipt<=?))
-            ORDER BY CASE WHEN events.state='pending' THEN 0 ELSE 1 END,
-                     events.next_receipt, events.rowid LIMIT 8
-        """, (time.time(),)).fetchall()
-        for row in rows:
-            binding = store.binding(row["foreman"])
-            if not binding["notification"]:
-                continue
-            try:
-                client = self.client_factory(**json.loads(binding["notification"]))
-                if row["state"] == "pending":
-                    # Persist before the external call. A crash changes recovery to receipt-only.
-                    with store.db:
-                        store.db.execute("UPDATE events SET state='attempting' WHERE id=?", (row["id"],))
-                    client.submit(row["request_id"],
-                                  f"Foreman completion event {row['id']} for task {row['task_id']}. "
-                                  "Use foreman_status to read the recorded result, then foreman_ack after consuming this event. "
-                                  "This wake is not engineering approval or permission to merge.")
-                    state = "queued"
-                else:
-                    state = "queued" if client.receipt(row["request_id"])["accepted"] else "uncertain"
-            except DeliveryUnknown:
-                state = "uncertain"
-            except (Rejected, ValueError, TypeError):
-                state = "rejected"
-            with store.db:
-                store.db.execute("UPDATE events SET state=?,next_receipt=? WHERE id=?",
-                                 (state, time.time() + 60, row["id"]))
 
 
 def open_status(*, run=subprocess.run):
@@ -102,18 +68,35 @@ def open_status(*, run=subprocess.run):
                 "--plugin", "local.teem", "--entrypoint", "status"], check=False).returncode
 
 
-def status(store, foreman, task_id=None):
+def status(store, foreman, task_id=None, workflow_id=None):
     binding = store.binding(foreman)
     tasks = store.tasks(foreman)
+    workflows = store.workflows(foreman)
+    if task_id and workflow_id:
+        raise Invalid('Select a task or a workflow, not both')
+    if workflow_id:
+        workflow = store.workflow(workflow_id)
+        if workflow['foreman'] != foreman:
+            raise Invalid('Workflow does not belong to this Foreman')
+        workflows = [workflow]
+        tasks = [t for t in tasks if t['request'].get('workflow_id') == workflow_id]
     if task_id:
         task = store.task(task_id)
         if task["foreman"] != foreman:
             raise Invalid("Task does not belong to this Foreman")
         tasks = [task]
     return {"foreman": foreman, "terminal_id": binding["terminal_id"],
-            "limits": {"worker": 2, "reviewer": 2}, "limit_scope": "whole supervisor",
-            "notifications_configured": bool(binding["notification"]),
-            "tasks": tasks[-100:], "events": store.events(foreman)}
+            "limits": {"worker": 2, "reviewer": 2}, "limit_scope": "per managed task; legacy tasks share two slots per role",
+            "completion_transport": "native-runtime",
+            "tasks": tasks[-100:], "events": store.events(foreman),
+            "workflows": workflows[-100:],
+            "projects": store.projects,
+            "agent_progress": [dict(row) for row in store.db.execute(
+                'SELECT agent_todos.* FROM agent_todos JOIN tasks ON tasks.id=agent_todos.task_id WHERE tasks.foreman=?', (foreman,))],
+            "approvals": [row for row in store.approvals(foreman) if not task_id or row["task_id"] == task_id],
+            "progress": store.progress(foreman),
+            "progress_delivery": [dict(row) for row in store.db.execute(
+                "SELECT seq,state,detail FROM progress_events WHERE foreman=? ORDER BY seq DESC LIMIT 1", (foreman,))]}
 
 
 def tools():
@@ -125,16 +108,51 @@ def tools():
                   "prompt": {"type": "string", "description": "Bounded assignment, acceptance criteria, and required checks"}}
     return [
         {"name": "foreman_submit", "description":
-         "Queue one headless task and return immediately. Up to two workers and two reviewers share this supervisor. "
+         "Queue one legacy headless task and return immediately. Legacy tasks share two slots per role; managed tasks have independent teams. "
          "Queue acceptance is not execution. Reviews require a clean, complete checkout at a fixed commit. "
          "Workers may use sparse checkouts, whose tests cannot qualify integration. Never retry with a new UUID after an uncertain response.",
          "inputSchema": {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}},
         {"name": "foreman_status", "description":
          "Read this Foreman's task state, results, and unacknowledged completion events. "
+         "Worker permissions appear as native cards here for the human to Approve once or Reject worker batch. "
+         "Native rejection declines all pending permissions in that worker session. "
+         "Do not answer permission cards or interpret conversational consent as a permission reply. "
          "Success means native execution ended, not that review or integration checks passed.",
-         "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "additionalProperties": False}},
+          "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "workflow_id": {"type": "string"}}, "additionalProperties": False}},
         {"name": "foreman_ack", "description": "Acknowledge one completion event after reading its result. Does not approve or merge code.",
-         "inputSchema": {"type": "object", "properties": {"event_id": {"type": "string"}}, "required": ["event_id"], "additionalProperties": False}},
+          "inputSchema": {"type": "object", "properties": {"event_id": {"type": "string"}}, "required": ["event_id"], "additionalProperties": False}},
+        {"name": "foreman_plan", "description":
+         "Define the current ordered checklist for this Foreman. Replace old completed work, preserving unrelated active work. "
+         "Link execution items to retained task UUIDs before submission; the supervisor owns their status. "
+         "Unlinked planning/verification items need an explicit status, based on evidence, not worker success. "
+         "The passive Teem TUI displays supervisor progress. Do not copy it to native todowrite or poll to render it. "
+         "No worker is dispatched and no Foreman turn is triggered by progress changes.",
+         "inputSchema": {"type": "object", "properties": {"items": {"type": "array", "maxItems": 100, "items": {
+             "type": "object", "properties": {"id": {"type": "string", "description": "Stable short plan item ID"},
+                 "content": {"type": "string", "description": "Short single-line checklist label"},
+                 "task_id": {"type": "string", "description": "Canonical UUID; do not supply status for linked execution"},
+                 "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}},
+              "required": ["id", "content"], "additionalProperties": False}}}, "required": ["items"], "additionalProperties": False}},
+        {"name": "foreman_workflow", "description":
+         "Delegate implementation, approved checks, two independent exact-snapshot reviews and bounded revisions. "
+         "Use a project alias from foreman_status.projects and acceptance criteria. The supervisor chooses separate "
+         "checkouts and base revisions; never ask the human for paths or hashes. No model override, arbitrary commands, "
+         "commits, integration or publication. Optionally split a task into up to two workers with disjoint file scopes. "
+         "Each task has its own two implementation and two review slots; additional tasks do not share them. "
+         "Their combined candidate must pass checks and both reviews. Revisions use one worker on that candidate; "
+         "stay within the user's authorised scope. Retain one UUID per immutable workflow, never replace uncertain work. "
+         "The workflow appears automatically in passive progress. Do not call todowrite for Teem or wait/poll to update it. "
+         "Finish your dispatch response so the human can keep talking. Progress and individual agent completions do not wake you. "
+         "One final workflow outcome asks for a concise result summary, not checklist maintenance.",
+         "inputSchema": {"type": "object", "properties": {
+             "workflow_id": {"type": "string"}, "project": {"type": "string"},
+             "title": {"type": "string", "description": "Short human-readable task title; no workflow codes", "maxLength": 100},
+              "scope": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+              "workers": {"type": "array", "minItems": 1, "maxItems": 2, "items": {
+                  "type": "object", "properties": {
+                      "scope": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                      "prompt": {"type": "string"}}, "required": ["scope", "prompt"], "additionalProperties": False}},
+             "prompt": {"type": "string"}}, "required": ["workflow_id", "project", "scope", "prompt"], "additionalProperties": False}},
     ]
 
 
@@ -149,6 +167,10 @@ def call_tool(store, foreman, name, arguments):
         return store.submit(foreman=foreman, **arguments)
     if name == "foreman_status":
         return status(store, foreman, **arguments)
+    if name == "foreman_plan":
+        return store.set_plan(foreman, arguments["items"])
+    if name == 'foreman_workflow':
+        return store.submit_workflow(foreman, **arguments)
     store.ack(foreman, arguments["event_id"])
     return {"acknowledged": True}
 
@@ -174,7 +196,7 @@ def mcp(store, foreman, source=sys.stdin, sink=sys.stdout):
                 version = params.get("protocolVersion")
                 result = {"protocolVersion": version if version in (
                     "2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25") else "2024-11-05",
-                          "capabilities": {"tools": {}}, "serverInfo": {"name": "teem", "version": "0.1.0"}}
+                          "capabilities": {"tools": {}}, "serverInfo": {"name": "Teem", "version": "0.1.0"}}
             elif method == "ping":
                 result = {}
             elif method == "tools/list":
@@ -207,7 +229,7 @@ def service_unit(config):
         return '"' + value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"') + '"'
     command = " ".join(quote(value) for value in (
         sys.executable, "-B", Path(__file__).resolve(), "--config", Path(config).expanduser().resolve()))
-    return ("[Unit]\nDescription=TEEM headless task supervisor\nAfter=network-online.target\n\n"
+    return ("[Unit]\nDescription=Teem headless task supervisor\nAfter=network-online.target\n\n"
             "[Service]\nType=simple\nExecStart=" + command + " serve\nRestart=on-failure\nRestartSec=5\n"
             "UMask=0077\nTimeoutStopSec=20\n\n[Install]\nWantedBy=default.target\n")
 
@@ -216,7 +238,7 @@ def serve(config):
     if not config["enabled"]:
         print("Foreman supervision is disabled")
         return
-    with Store(config["state_dir"], config["allowed_checkouts"]) as store:
+    with Store(config["state_dir"], config["allowed_checkouts"], projects=config.get('projects')) as store:
         with (store.directory / "supervisor.lock").open("a") as lock:
             os.chmod(lock.name, 0o600)
             try:
@@ -229,10 +251,16 @@ def serve(config):
                 stopping = True
             signal.signal(signal.SIGTERM, stop)
             signal.signal(signal.SIGINT, stop)
+            checks = CheckRunner()
             while not stopping:
                 try:
+                    checks.reap()
                     runtime = OpenCode(config["registry"], config["model"])
-                    Supervisor(store, runtime, Notifier()).tick()
+                    WorkflowEngine(store, runtime, checks).tick()
+                    Supervisor(store, runtime, Notifier(runtime)).tick()
+                    ApprovalRelay(runtime).deliver(store)
+                    AgentTodoReader(runtime).deliver(store)
+                    ProgressPublisher(runtime).deliver(store)
                 except (OSError, ValueError):
                     print("Foreman runtime unavailable. Reservations retained", file=sys.stderr, flush=True)
                 for _ in range(20):
@@ -247,8 +275,7 @@ def main(argv=None):
                    str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "teem"))) / "config.toml"
     parser.add_argument("--config", type=Path, default=default)
     commands = parser.add_subparsers(dest="command", required=True)
-    bind = commands.add_parser("bind", help="Register the focused native Foreman. No agent execution")
-    bind.add_argument("--notification-file", type=Path)
+    commands.add_parser("bind", help="Register the focused native Foreman. No agent execution")
     for name in ("status", "mcp"):
         command = commands.add_parser(name)
         command.add_argument("--foreman", required=True)
@@ -276,10 +303,9 @@ def main(argv=None):
                 print("Foreman supervision is disabled")
                 return 0
             return subprocess.run(["systemctl", "--user", "start", "teem.service"], check=False).returncode
-        with Store(config["state_dir"], config["allowed_checkouts"]) as store:
+        with Store(config["state_dir"], config["allowed_checkouts"], projects=config.get('projects')) as store:
             if args.command == "bind":
-                notification = json.loads(args.notification_file.read_text()) if args.notification_file else None
-                print(json.dumps(bind_from_herdr(store, notification)))
+                print(json.dumps(bind_from_herdr(store)))
             elif args.command == "mcp":
                 mcp(store, args.foreman)
             elif args.command == "status":

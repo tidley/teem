@@ -1,4 +1,4 @@
-# Local TEEM pilot
+# Local Teem pilot
 
 ## Directories
 
@@ -7,7 +7,8 @@
 - Sparse worker checkouts: `/home/tom/code/teem-pilot-worker-a` and `teem-pilot-worker-b`.
 - Complete reviewer checkouts: `/home/tom/code/teem-pilot-review-a` and `teem-pilot-review-b`.
 
-These are local repositories. No remote hosting or publication is configured.
+These paths describe the original local pilot. Teem's plugin source is published
+at https://github.com/tidley/teem; the pilot project and its checkouts remain local.
 The worker/reviewer clones use only the local pilot source as their origin.
 
 ## Safety defaults
@@ -17,7 +18,7 @@ The configured model is only a candidate until Tom approves its use.
 No global OpenCode configuration is changed.
 `examples/pilot-foreman.json` provides a project-local coordinator profile with ordered runtime permission rules.
 It denies direct edits, shell commands, ordinary subagents, and other mutation tools.
-It permits source inspection and the three TEEM delegation tools.
+It permits source inspection and the three Teem delegation tools.
 These runtime rules are not an operating-system sandbox and have not been tested with a live model.
 
 The pilot's machine-local `opencode.json` starts with only the coordinator profile.
@@ -39,6 +40,10 @@ Before the first model-backed run:
 7. Inspect the changes before authorising a local commit and advancing a reviewer checkout.
 8. Assign one reviewer against that fixed commit and verify result delivery.
 
+Completion events return through the native OpenCode session API. No Codr control interface is required.
+Codr/White Noise phone access is optional and independent. Its settings and services remain unchanged.
+No native completion event is submitted during this code update because that could start a model request.
+
 Automatic review scheduling, commits, merges, and publication remain disabled or unimplemented.
 Existing Codr phone admission and desktop draft safety still need an explicit live test.
 
@@ -49,6 +54,6 @@ It records the actual baseline commit, Foreman session, Herdr pane, configuratio
 It is not a credential file and must not contain service passwords or signer information.
 Read that record rather than inventing terminal IDs or rerunning uncertain creation commands.
 
-The status popup is available through the TEEM plugin action after linking.
+The status popup is available through the Teem plugin action after linking.
 Use `herdr plugin pane open --plugin local.teem --entrypoint status` from inside Herdr.
 No `/teem` slash command is installed by this setup.

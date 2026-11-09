@@ -1,5 +1,5 @@
 id = "local.teem"
-name = "TEEM"
+name = "Teem"
 version = "0.1.0"
 min_herdr_version = "0.9.1"
 description = "One visible Foreman with two headless workers and two reviewers"
@@ -10,25 +10,25 @@ command = ["python3", "foreman_plugin.py", "service-start"]
 
 [[actions]]
 id = "bind"
-title = "TEEM: bind focused Foreman conversation"
+title = "Teem: bind focused Foreman conversation"
 contexts = ["workspace"]
 command = ["python3", "foreman_plugin.py", "bind"]
 
 [[actions]]
 id = "start"
-title = "TEEM: start configured supervisor"
+title = "Teem: start configured supervisor"
 contexts = ["workspace"]
 command = ["python3", "foreman_plugin.py", "service-start"]
 
 [[actions]]
 id = "status"
-title = "TEEM: show task status"
+title = "Teem: show task status"
 contexts = ["workspace"]
 command = ["python3", "foreman_plugin.py", "open-status"]
 
 [[panes]]
 id = "status"
-title = "TEEM task status"
+title = "Teem task status"
 placement = "popup"
 width = "90%"
 height = "80%"
