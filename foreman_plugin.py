@@ -1,1 +1,0 @@
-tests/reference/foreman_plugin.py

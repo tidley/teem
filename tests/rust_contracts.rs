@@ -12,7 +12,7 @@ fn cli(config: &std::path::Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn reads_python_database_and_preserves_native_identities_without_runtime() {
+fn reads_legacy_database_and_preserves_native_identities_without_runtime() {
     let tmp = tempfile::tempdir().unwrap();
     let config = tmp.path().join("config.toml");
     let state = tmp.path().join("state");
@@ -24,19 +24,11 @@ fn reads_python_database_and_preserves_native_identities_without_runtime() {
         ),
     )
     .unwrap();
-    let script = "from foreman_supervisor import Store\nimport sys\nwith Store(sys.argv[1],[]) as s:\n s.bind('ses_existing','terminal-existing')\n s.db.execute(\"INSERT INTO events(id,task_id,foreman,request_id,transport,state) VALUES ('old','old-task','ses_existing','00000000-0000-0000-0000-000000000001','legacy-codr','uncertain')\")\n s.db.commit()\n";
-    assert!(
-        Command::new("python3")
-            .env(
-                "PYTHONPATH",
-                concat!(env!("CARGO_MANIFEST_DIR"), "/tests/reference")
-            )
-            .args(["-B", "-c", script])
-            .arg(&state)
-            .status()
-            .unwrap()
-            .success()
-    );
+    fs::create_dir(&state).unwrap();
+    rusqlite::Connection::open(state.join("tasks.sqlite3"))
+        .unwrap()
+        .execute_batch(include_str!("fixtures/legacy-state.sql"))
+        .unwrap();
     let out = cli(&config, &["status", "--foreman", "ses_existing"]);
     assert!(
         out.status.success(),

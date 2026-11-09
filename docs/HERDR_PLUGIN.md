@@ -29,8 +29,9 @@ reviews require a strict snapshot-bound JSON verdict and independently checked g
 - Existing authorised checkout roots for manual tasks, or an explicit managed-project policy.
 
 The plugin never launches, elects, replaces, or restarts OpenCode's background service.
-The runtime does not invoke Python. The Python reference under `tests/reference`
-is used only for regression qualification. Tests do not use live models or services.
+The runtime and tests are native Rust and do not invoke an interpreter. Historical
+wire/database expectations are inert JSON/SQL fixtures, not executable reference
+code. Tests do not use live models or services.
 Teem does not require Codr, White Noise, a bridge account, or a Codr local control socket.
 
 ## Explicit local setup
@@ -130,7 +131,7 @@ max_revisions = 1
 [[projects.pilot.checks]]
 name = "tests"
 kind = "test"
-argv = ["python3", "-B", "-m", "unittest", "discover", "-s", "tests", "-v"]
+argv = ["cargo", "test", "--locked"]
 cwd = "."
 timeout = 300
 output_limit = 1048576
@@ -450,7 +451,6 @@ Herdr and the underlying OpenCode runtime retain responsibility for their own re
 cargo test --locked
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
-PYTHONPATH=tests/reference python3 -B -m unittest discover -s tests -v
 bun test ui/teem-progress/progress.test.mjs
 ```
 

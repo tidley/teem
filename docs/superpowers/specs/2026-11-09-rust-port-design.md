@@ -1,5 +1,9 @@
 # Teem Rust port
 
+Historical migration design. The temporary executable reference used during
+the initial port has since been removed; current tests use inert fixtures and
+native Rust subprocesses only. See the cleanup record and current README.
+
 The requested outcome is a native Rust supervisor and Herdr/MCP command, not a
 Rust launcher around Python. Keep the TypeScript OpenCode TUI adapter: the host
 loads that interface as TypeScript. Keep Python as a reference/test oracle until

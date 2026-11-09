@@ -1,1 +1,0 @@
-tests/reference/foreman_agent_progress.py

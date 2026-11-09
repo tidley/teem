@@ -69,6 +69,7 @@ struct Fake {
     outcomes: RefCell<BTreeMap<String, Value>>,
     notifications: RefCell<usize>,
     fail_notify: bool,
+    fail_model: bool,
     pending: RefCell<Vec<Value>>,
     forms: RefCell<BTreeMap<String, Value>>,
 }
@@ -103,6 +104,9 @@ impl Runtime for Fake {
         Ok(self.directory.clone())
     }
     fn dispatch_model(&self, _: &Value) -> Result<Value> {
+        if self.fail_model {
+            anyhow::bail!("Inherited model lookup unavailable");
+        }
         Ok(json!({"providerID":"test","id":"model"}))
     }
     fn create(&self, t: &Value) -> Result<()> {
@@ -118,6 +122,9 @@ impl Runtime for Fake {
         Ok(())
     }
     fn inspect(&self, t: &Value) -> Result<Value> {
+        if self.fail_model {
+            return Err(runtime::Missing.into());
+        }
         Ok(self
             .outcomes
             .borrow()
@@ -141,8 +148,8 @@ impl Runtime for Fake {
 }
 
 #[test]
-fn frozen_python_wire_and_digest_contracts_match() {
-    let f: Value = serde_json::from_str(include_str!("fixtures/python-contracts.json")).unwrap();
+fn frozen_legacy_wire_and_digest_contracts_match() {
+    let f: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
     let t = &f["task"];
     assert_eq!(runtime::permissions(t), f["permissions"]);
     assert_eq!(
@@ -162,7 +169,7 @@ fn frozen_python_wire_and_digest_contracts_match() {
 }
 
 #[test]
-fn historical_python_digest_encoding_handles_exponents_and_del() {
+fn historical_digest_encoding_handles_exponents_and_del() {
     let cases = [
         (json!({"timeout": 0.000001}), "{\"timeout\": 1e-06}"),
         (json!({"n": 1e16}), "{\"n\": 1e+16}"),
@@ -175,14 +182,8 @@ fn historical_python_digest_encoding_handles_exponents_and_del() {
 }
 
 #[test]
-fn historical_float_encoding_matches_python_over_a_deterministic_sample() {
-    let script = "import json,random,struct,math\nr=random.Random(1)\nvalues=[]\nfor _ in range(2000):\n f=struct.unpack('d',r.randbytes(8))[0]\n if math.isfinite(f):values.append([f,json.dumps(f)])\nprint(json.dumps(values))";
-    let output = std::process::Command::new("python3")
-        .args(["-B", "-c", script])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let cases: Value = serde_json::from_slice(&output.stdout).unwrap();
+fn historical_float_encoding_matches_frozen_legacy_sample() {
+    let cases: Value = serde_json::from_str(include_str!("fixtures/legacy-floats.json")).unwrap();
     for case in cases.as_array().unwrap() {
         assert_eq!(canonical(&case[0]), case[1].as_str().unwrap());
     }
@@ -336,16 +337,13 @@ fn check_timeout_output_limit_and_early_closed_pipes_do_not_pass() {
     let tmp = tempfile::tempdir().unwrap();
     let p = tmp.path().join("repo");
     repo(&p);
-    for (name, code, flag) in [
-        ("timeout", "import time;time.sleep(2)", "timed_out"),
-        ("limit", "print('x'*10000)", "output_limited"),
-        (
-            "closed",
-            "import os,time;os.close(1);os.close(2);time.sleep(2)",
-            "timed_out",
-        ),
+    for (name, mode, value, flag) in [
+        ("timeout", "sleep", "2000", "timed_out"),
+        ("limit", "output", "10000", "output_limited"),
+        ("closed", "closed", "2000", "timed_out"),
     ] {
-        let mut policy = check_policy(json!(["python3", "-B", "-c", code]));
+        let mut policy = check_policy(json!(["native-fixture"]));
+        policy[0]["argv"] = json!([env!("CARGO_BIN_EXE_teem-subprocess-fixture"), mode, value]);
         policy[0]["timeout"] = json!(0.15);
         let result = checks::execute(&policy[0], &p, &tmp.path().join(name)).unwrap();
         assert_eq!(result[flag], true, "{result}");
@@ -591,8 +589,7 @@ impl Runtime for Routes {
     }
 }
 fn native_routes() -> (Value, Routes) {
-    let fixture: Value =
-        serde_json::from_str(include_str!("fixtures/python-contracts.json")).unwrap();
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
     let t = fixture["task"].clone();
     let prefix = format!("/api/session/{}", text(&t, "session_id"));
     let mut session = fixture["session_payload"].clone();
@@ -634,8 +631,7 @@ fn native_failure_and_queued_admission_are_not_success() {
 }
 #[test]
 fn inherited_model_and_variant_must_match_exact_native_session() {
-    let fixture: Value =
-        serde_json::from_str(include_str!("fixtures/python-contracts.json")).unwrap();
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
     let t = &fixture["task"];
     let mut session = fixture["session_payload"].clone();
     session["model"]["variant"] = json!("default");
@@ -748,8 +744,8 @@ fn successful_check_cleans_up_its_background_descendants() {
     let tmp = tempfile::tempdir().unwrap();
     let p = tmp.path().join("source");
     repo(&p);
-    let code = "import subprocess; p=subprocess.Popen(['python3','-B','-c','import time;time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);print(p.pid,flush=True)";
-    let policy = check_policy(json!(["python3", "-B", "-c", code]));
+    let mut policy = check_policy(json!(["native-fixture"]));
+    policy[0]["argv"] = json!([env!("CARGO_BIN_EXE_teem-subprocess-fixture"), "background"]);
     let log = tmp.path().join("process.log");
     let result = checks::execute(&policy[0], &p, &log).unwrap();
     assert_eq!(result["returncode"], 0);
@@ -813,4 +809,662 @@ fn reopened_checking_and_reviewing_workflows_keep_original_evidence_and_ids() {
     assert_eq!(w["data"]["rounds"][0]["review_ids"], ids);
     assert_eq!(s.tasks(None).unwrap().len(), 3);
     assert!(f.calls.borrow().is_empty());
+}
+
+#[test]
+fn dispatch_model_is_read_from_exact_parent_session() {
+    let (t, mut r) = native_routes();
+    let path = format!("/api/session/{}", text(&t, "foreman"));
+    r.values.insert(
+        path.clone(),
+        json!({"id":t["foreman"],"model":{"providerID":"other","id":"selected","variant":"high"}}),
+    );
+    assert_eq!(
+        r.dispatch_model(&t).unwrap(),
+        json!({"providerID":"other","id":"selected","variant":"high"})
+    );
+    r.values.get_mut(&path).unwrap()["id"] = json!("ses_foreign");
+    assert!(r.dispatch_model(&t).is_err());
+}
+#[test]
+fn invalid_inherited_models_fail_closed() {
+    for value in [
+        json!({}),
+        json!({"providerID":"","id":"model"}),
+        json!({"providerID":"test","id":"x","variant":""}),
+        json!({"providerID":"test","id":"x","extra":true}),
+        json!({"providerID":"test","id":"x\n"}),
+    ] {
+        assert!(model(&value).is_err());
+    }
+}
+#[test]
+fn recorded_dispatch_model_survives_reopen_and_cannot_be_replaced() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("repo");
+    let base = repo(&path);
+    let allowed = vec![path.to_str().unwrap().into()];
+    let s = store(tmp.path(), &allowed, json!({}));
+    let t = s.submit("ses_test", req(&path, &base, "worker")).unwrap();
+    s.claim().unwrap();
+    let m = json!({"providerID":"test","id":"first"});
+    s.record_model(&text(&t, "id"), &m).unwrap();
+    let directory = s.directory.clone();
+    drop(s);
+    let s = Store::open(&directory, &allowed, json!({})).unwrap();
+    assert_eq!(s.task(&text(&t, "id")).unwrap()["runtime_model"], m);
+    assert!(
+        s.record_model(
+            &text(&t, "id"),
+            &json!({"providerID":"test","id":"replacement"})
+        )
+        .is_err()
+    );
+}
+#[test]
+fn worker_and_reviewer_permissions_do_not_gain_unscoped_mutation() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
+    let mut t = fixture["task"].clone();
+    t["role"] = json!("reviewer");
+    let permissions = array(&runtime::permissions(&t));
+    assert!(!permissions.iter().any(|p| {
+        ["edit", "shell", "external_directory", "execute", "subagent"]
+            .contains(&text(p, "action").as_str())
+            && p["effect"] == "allow"
+    }));
+    t["role"] = json!("worker");
+    let permissions = array(&runtime::permissions(&t));
+    assert!(
+        permissions
+            .iter()
+            .any(|p| p["action"] == "shell" && p["effect"] == "ask")
+    );
+    assert!(
+        !permissions
+            .iter()
+            .any(|p| p["action"] == "edit" && p["resource"] == "*" && p["effect"] == "allow")
+    );
+    assert!(
+        permissions
+            .iter()
+            .rev()
+            .take(4)
+            .all(|p| p["action"] == "edit" && p["effect"] == "deny")
+    );
+}
+#[test]
+fn native_todo_capability_does_not_change_edit_shell_or_delegation_rules() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
+    let mut t = fixture["task"].clone();
+    t["request"].as_object_mut().unwrap().remove("native_todos");
+    let before = runtime::permissions(&t);
+    t["request"]["native_todos"] = json!(true);
+    let mut after = array(&runtime::permissions(&t));
+    after.retain(|r| r["action"] != "todowrite");
+    assert_eq!(json!(after), before);
+}
+#[test]
+fn native_input_absence_and_idle_without_terminal_outcome_are_uncertain() {
+    let (t, mut r) = native_routes();
+    let prefix = format!("/api/session/{}", text(&t, "session_id"));
+    let prompt = format!("{prefix}/message/{}", text(&t, "prompt_id"));
+    let original = r.values.remove(&prompt).unwrap();
+    assert_eq!(r.inspect(&t).unwrap()["state"], "uncertain");
+    r.values.insert(prompt, original);
+    r.values.get_mut(&prefix).unwrap()["time"]["idle"] = json!(9);
+    assert_eq!(r.inspect(&t).unwrap()["state"], "uncertain");
+}
+#[test]
+fn active_session_still_requires_original_prompt() {
+    let (t, mut r) = native_routes();
+    let prefix = format!("/api/session/{}", text(&t, "session_id"));
+    r.values.insert(
+        "/api/session/active".into(),
+        json!({text(&t,"session_id"): {}}),
+    );
+    r.values
+        .remove(&format!("{prefix}/message/{}", text(&t, "prompt_id")));
+    assert_eq!(r.inspect(&t).unwrap()["state"], "uncertain");
+}
+#[test]
+fn native_receipt_uses_exact_message_or_inbox_identity_without_resending() {
+    let f: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
+    let event = &f["event"];
+    let payload = runtime::event_payload(event).unwrap();
+    let prefix = format!("/api/session/{}", text(event, "foreman"));
+    let mut message = json!({"id":payload["id"],"type":"synthetic","text":payload["text"],"metadata":payload["metadata"]});
+    let mut r = Routes {
+        values: BTreeMap::new(),
+    };
+    r.values.insert(
+        format!("{prefix}/message/{}", text(&payload, "id")),
+        message.clone(),
+    );
+    assert!(r.accepted(event).unwrap());
+    message["text"] = json!("changed payload");
+    r.values.insert(
+        format!("{prefix}/message/{}", text(&payload, "id")),
+        message,
+    );
+    assert!(r.accepted(event).is_err());
+    r.values.clear();
+    r.values.insert(format!("{prefix}/inbox"),json!([{"id":payload["id"],"type":"synthetic","sessionID":event["foreman"],"payload":payload}]));
+    assert!(r.accepted(event).unwrap());
+    r.values.insert(format!("{prefix}/inbox"), json!([]));
+    assert!(!r.accepted(event).unwrap());
+}
+#[test]
+fn native_inbox_receipt_rejects_wrong_foreman() {
+    let f: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
+    let event = &f["event"];
+    let payload = runtime::event_payload(event).unwrap();
+    let mut r = Routes {
+        values: BTreeMap::new(),
+    };
+    r.values.insert(
+        format!("/api/session/{}/inbox", text(event, "foreman")),
+        json!([{"id":payload["id"],"type":"synthetic","sessionID":"ses_wrong","payload":payload}]),
+    );
+    assert!(r.accepted(event).is_err());
+}
+#[test]
+fn permission_observation_requires_exact_tool_input_and_worker_identity() {
+    let (t, mut r) = native_routes();
+    let prefix = format!("/api/session/{}", text(&t, "session_id"));
+    r.values.insert(
+        "/api/session/active".into(),
+        json!({text(&t,"session_id"): {}}),
+    );
+    r.values.insert(format!("{prefix}/form"), json!([]));
+    r.values.insert(format!("{prefix}/permission"),json!([{"id":"per_check","sessionID":t["session_id"],"action":"shell","resources":["git status"],"source":{"type":"tool","messageID":"msg_tool","id":"call_tool"}}]));
+    r.values.insert(format!("{prefix}/message/msg_tool"),json!({"id":"msg_tool","type":"assistant","content":[{"id":"call_tool","type":"tool","state":{"input":{"command":"git status","workdir":t["checkout"]}}}]}));
+    let p = r.approvals(&t).unwrap();
+    assert_eq!(p[0]["input"]["command"], "git status");
+    r.values.get_mut(&format!("{prefix}/permission")).unwrap()[0]["sessionID"] = json!("ses_wrong");
+    assert!(r.approvals(&t).is_err());
+}
+#[test]
+fn native_todo_reader_ignores_prose_failed_tools_and_honors_explicit_empty_list() {
+    let (t, mut r) = native_routes();
+    let path = format!(
+        "/api/session/{}/message?limit=50&order=desc&type=assistant",
+        text(&t, "session_id")
+    );
+    r.values.insert(path.clone(),json!([{"id":"msg_prose","type":"assistant","content":[{"type":"text","text":"Todo: finished"},{"type":"tool","name":"todowrite","state":{"status":"error","input":{"todos":[{"content":"not valid","status":"completed"}]}}}]}]));
+    assert!(r.todos(&t).unwrap().is_none());
+    r.values.insert(path,json!([{"id":"msg_todos","type":"assistant","content":[{"type":"tool","name":"todowrite","state":{"status":"completed","input":{"todos":[]}}}]}]));
+    assert_eq!(r.todos(&t).unwrap().unwrap()["todos"], json!([]));
+}
+
+#[test]
+fn check_early_closed_output_can_still_finish_successfully() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("source");
+    repo(&p);
+    let mut policy = check_policy(json!(["native-fixture"]));
+    policy[0]["argv"] = json!([
+        env!("CARGO_BIN_EXE_teem-subprocess-fixture"),
+        "closed",
+        "30"
+    ]);
+    let result = checks::execute(&policy[0], &p, &tmp.path().join("log")).unwrap();
+    assert_eq!(result["returncode"], 0);
+    assert_eq!(result["timed_out"], false);
+}
+#[test]
+fn shell_metacharacters_remain_literal_child_arguments() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("source");
+    repo(&p);
+    let mut policy = check_policy(json!(["native-fixture"]));
+    policy[0]["argv"] = json!([
+        env!("CARGO_BIN_EXE_teem-subprocess-fixture"),
+        "arguments",
+        "$(touch owned); & > owned"
+    ]);
+    let log = tmp.path().join("log");
+    let result = checks::execute(&policy[0], &p, &log).unwrap();
+    assert_eq!(result["returncode"], 0);
+    assert_eq!(
+        read_json(&log).unwrap(),
+        json!(["$(touch owned); & > owned"])
+    );
+    assert!(!p.join("owned").exists());
+}
+#[test]
+fn approved_check_cwd_cannot_follow_symlinks_outside_candidate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("source");
+    repo(&p);
+    let outside = tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, p.join("escape")).unwrap();
+    let mut policy = check_policy(json!(["git", "status"]));
+    policy[0]["cwd"] = json!("escape");
+    assert!(
+        runner()
+            .start(&tmp.path().join("evidence"), &p, &policy, "snapshot")
+            .is_err()
+    );
+}
+#[test]
+fn todo_configuration_never_overwrites_existing_project_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("source");
+    let base = repo(&p);
+    let checkout = checkouts::prepare(&p, &tmp.path().join("worker"), &base, None).unwrap();
+    fs::write(checkout.join("opencode.json"), "{\"warming\":true}").unwrap();
+    let before = fs::read(checkout.join("opencode.json")).unwrap();
+    assert!(!checkouts::enable_todos(&checkout, &["src".into()]).unwrap());
+    assert_eq!(fs::read(checkout.join("opencode.json")).unwrap(), before);
+    assert!(!checkouts::enable_todos(&checkout, &["opencode.json".into()]).unwrap());
+}
+#[test]
+fn complete_candidate_rejects_later_sparse_or_shallow_replacement() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("source");
+    let base = repo(&p);
+    let checkout = checkouts::prepare(&p, &tmp.path().join("worker"), &base, None).unwrap();
+    let tree = checkouts::candidate_tree(&checkout, &base).unwrap();
+    git(
+        &checkout,
+        &["config", "core.sparseCheckout", "true"],
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(checkouts::validate(&checkout, &base, &tree).is_err());
+}
+#[test]
+fn managed_clone_does_not_copy_foreman_project_configuration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("source");
+    let base = repo(&p);
+    fs::write(p.join("AGENTS.md"), "Local instructions").unwrap();
+    fs::write(p.join("opencode.json"), "private Foreman binding").unwrap();
+    let checkout = checkouts::prepare(&p, &tmp.path().join("worker"), &base, None).unwrap();
+    assert_eq!(
+        fs::read_to_string(checkout.join("AGENTS.md")).unwrap(),
+        "Local instructions"
+    );
+    assert!(!checkout.join("opencode.json").exists());
+    assert!(
+        git_text(&checkout, &["status", "--porcelain"])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+fn reviewing_fixture(tmp: &Path) -> (Store, Fake, String, checks::Runner) {
+    let (s, f, w) = workflow_fixture(tmp, false);
+    let id = text(&w, "id");
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    await_receipt(&w["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["state"], "reviewing");
+    (s, f, id, runner)
+}
+fn pass_reviews(s: &Store, id: &str) {
+    let w = s.workflow(id).unwrap();
+    let hash = &w["data"]["rounds"][0]["snapshot"]["sha256"];
+    for task in s.tasks(None).unwrap() {
+        if task["role"] == "reviewer" {
+            s.update(
+                &text(&task, "id"),
+                "succeeded",
+                &json!({"snapshot":hash,"verdict":"pass","findings":[]}).to_string(),
+                "",
+            )
+            .unwrap();
+        }
+    }
+}
+#[test]
+fn two_worker_assignments_must_be_disjoint_and_within_task_scope() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = workflow_fixture(tmp.path(), false);
+    for workers in [
+        json!([{"scope":["src"],"prompt":"a"},{"scope":["src/a"],"prompt":"b"}]),
+        json!([{"scope":["outside"],"prompt":"a"}]),
+        json!([]),
+    ] {
+        let mut r = w["request"].clone();
+        r["workflow_id"] = json!(uuid::Uuid::new_v4().to_string());
+        r["workers"] = workers;
+        assert!(s.workflow_submit("ses_test", r).is_err());
+    }
+}
+#[test]
+fn uncertain_worker_keeps_original_team_without_replacement() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), true);
+    let id = text(&w, "id");
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let tasks = s.tasks(None).unwrap();
+    s.update(&text(&tasks[0], "id"), "uncertain", "", "")
+        .unwrap();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["state"], "uncertain");
+    assert_eq!(s.tasks(None).unwrap().len(), 2);
+}
+#[test]
+fn completed_agent_events_are_passive_until_single_workflow_outcome() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), true);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    finish_workers(&s);
+    runtime::notify(&s, &f).unwrap();
+    assert_eq!(*f.notifications.borrow(), 0);
+    assert!(
+        s.query("SELECT state FROM events", [])
+            .unwrap()
+            .iter()
+            .all(|r| r["state"] == "passive")
+    );
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap()["state"], "working");
+}
+#[test]
+fn worker_cannot_modify_teammate_scope() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), true);
+    let id = text(&w, "id");
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    finish_workers(&s);
+    let tasks = s.tasks(None).unwrap();
+    let first = &tasks[0];
+    let own = scope(&first["request"]["scope"]).unwrap();
+    let forbidden = if own[0] == "src/a" { "src/b" } else { "src/a" };
+    fs::write(
+        PathBuf::from(text(first, "checkout")).join(forbidden),
+        "out of scope",
+    )
+    .unwrap();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["state"], "blocked");
+}
+#[test]
+fn one_explicit_worker_cannot_take_the_entire_workflow_scope() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    let id = text(&w, "id");
+    let mut request = w["request"].clone();
+    request["workers"] = json!([{"scope":["src/a"],"prompt":"a only"}]);
+    s.exec(
+        "UPDATE workflows SET request=? WHERE id=?",
+        rusqlite::params![canonical(&request), id],
+    )
+    .unwrap();
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    finish_workers(&s);
+    let t = s.tasks(None).unwrap().remove(0);
+    fs::write(
+        PathBuf::from(text(&t, "checkout")).join("src/b"),
+        "forbidden",
+    )
+    .unwrap();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["state"], "blocked");
+}
+#[test]
+fn failed_approved_checks_start_bounded_revision_with_verified_diagnostics() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, f, w) = workflow_fixture(tmp.path(), false);
+    let id = text(&w, "id");
+    s.projects["project"]["checks"][0]["argv"] = json!(["git", "diff", "--exit-code", "HEAD"]);
+    s.exec(
+        "UPDATE workflows SET policy=? WHERE id=?",
+        rusqlite::params![canonical(&s.projects["project"]), id],
+    )
+    .unwrap();
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    await_receipt(&w["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    assert_eq!(w["state"], "working");
+    assert_eq!(w["round"], 1);
+    let task = s
+        .task(w["data"]["rounds"][1]["worker_id"].as_str().unwrap())
+        .unwrap();
+    assert!(text(&task["request"], "prompt").contains("untrusted data"));
+    assert!(text(&task["request"], "prompt").contains("diff --git"));
+    assert!(
+        !s.tasks(None)
+            .unwrap()
+            .iter()
+            .any(|t| t["role"] == "reviewer")
+    );
+}
+#[test]
+fn snapshot_or_check_candidate_drift_cannot_qualify_ready() {
+    for drift in ["review", "check", "receipt"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (s, f, id, mut runner) = reviewing_fixture(tmp.path());
+        pass_reviews(&s, &id);
+        let w = s.workflow(&id).unwrap();
+        let r = &w["data"]["rounds"][0];
+        match drift {
+            "review" => {
+                let t = s.task(r["review_ids"][0].as_str().unwrap()).unwrap();
+                fs::write(
+                    PathBuf::from(text(&t, "checkout")).join("src/a"),
+                    "tampered",
+                )
+                .unwrap();
+            }
+            "check" => {
+                fs::write(
+                    PathBuf::from(text(r, "check_checkout")).join("src/a"),
+                    "tampered",
+                )
+                .unwrap();
+            }
+            _ => {
+                fs::write(text(&r["check_handle"], "receipt"), "{}").unwrap();
+            }
+        }
+        workflows::tick(&s, &f, &mut runner).unwrap();
+        assert_eq!(s.workflow(&id).unwrap()["state"], "blocked", "{drift}");
+    }
+}
+#[test]
+fn wrong_snapshot_reviewer_execution_does_not_qualify_workflow() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, id, mut runner) = reviewing_fixture(tmp.path());
+    for t in s.tasks(None).unwrap() {
+        if t["role"] == "reviewer" {
+            s.update(
+                &text(&t, "id"),
+                "succeeded",
+                &json!({"snapshot":"wrong","verdict":"pass","findings":[]}).to_string(),
+                "",
+            )
+            .unwrap();
+        }
+    }
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["state"], "blocked");
+}
+#[test]
+fn review_execution_completion_is_not_a_passing_verdict_in_progress() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, id, _) = reviewing_fixture(tmp.path());
+    pass_reviews(&s, &id);
+    let p = progress::snapshot(&s, "ses_test").unwrap();
+    let reviews = array(&p["items"])
+        .into_iter()
+        .filter(|r| text(r, "label").contains("review"))
+        .collect::<Vec<_>>();
+    assert_eq!(reviews.len(), 2);
+    assert!(reviews.iter().all(|r|r["status"]=="in_progress"&&text(r,"content").contains("verdict pending")));
+}
+#[test]
+fn latest_result_is_selected_by_finish_time_without_backfilled_notifications() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = workflow_fixture(tmp.path(), false);
+    s.exec(
+        "UPDATE workflows SET state='ready',created=100,data=? WHERE id=?",
+        rusqlite::params![
+            json!({"rounds":[],"finished_at":400}).to_string(),
+            text(&w, "id")
+        ],
+    )
+    .unwrap();
+    let mut other = w["request"].clone();
+    other["workflow_id"] = json!(uuid::Uuid::new_v4().to_string());
+    other["title"] = json!("Finished earlier");
+    let second = s.workflow_submit("ses_test", other).unwrap();
+    s.exec(
+        "UPDATE workflows SET state='blocked',created=200,data=? WHERE id=?",
+        rusqlite::params![
+            json!({"rounds":[],"finished_at":300}).to_string(),
+            text(&second, "id")
+        ],
+    )
+    .unwrap();
+    let p = progress::snapshot(&s, "ses_test").unwrap();
+    assert_eq!(p["latest_result"]["workflow_id"], w["id"]);
+    assert_eq!(p["todos"], json!([]));
+    assert!(s.query("SELECT * FROM events", []).unwrap().is_empty());
+}
+#[test]
+fn workflow_titles_are_readable_and_do_not_mutate_immutable_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = workflow_fixture(tmp.path(), false);
+    let mut request = w["request"].clone();
+    request.as_object_mut().unwrap().remove("title");
+    request["prompt"] = json!("Add group_labels_by_initial(items) and tests.");
+    s.exec(
+        "UPDATE workflows SET request=? WHERE id=?",
+        rusqlite::params![canonical(&request), text(&w, "id")],
+    )
+    .unwrap();
+    let p = progress::snapshot(&s, "ses_test").unwrap();
+    assert!(text(&p["items"][0], "label").contains("Add group labels by initial"));
+    assert!(!text(&p["items"][0], "label").contains(&text(&w, "id")));
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap()["request"], request);
+}
+
+#[test]
+fn failed_inherited_model_read_retains_reservation_without_native_admission() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("source");
+    let base = repo(&path);
+    let s = store(tmp.path(), &[path.to_str().unwrap().into()], json!({}));
+    let task = s.submit("ses_test", req(&path, &base, "worker")).unwrap();
+    let f = Fake {
+        fail_model: true,
+        ..Default::default()
+    };
+    runtime::tick(&s, &f).unwrap();
+    assert_eq!(s.task(&text(&task, "id")).unwrap()["state"], "uncertain");
+    assert!(s.task(&text(&task, "id")).unwrap()["runtime_model"].is_null());
+    assert!(f.calls.borrow().is_empty());
+    runtime::tick(&s, &f).unwrap();
+    assert_eq!(s.task(&text(&task, "id")).unwrap()["state"], "uncertain");
+    assert!(f.calls.borrow().is_empty());
+}
+
+#[test]
+fn both_worker_contributions_survive_combination_and_single_worker_revision() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), true);
+    let id = text(&w, "id");
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    for task in s.tasks(None).unwrap() {
+        let owned = scope(&task["request"]["scope"]).unwrap().remove(0);
+        fs::write(
+            PathBuf::from(text(&task, "checkout")).join(&owned),
+            format!("contribution to {owned}\n"),
+        )
+        .unwrap();
+        s.update(&text(&task, "id"), "succeeded", "implemented", "")
+            .unwrap();
+    }
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    let previous = &w["data"]["rounds"][0];
+    let combined = PathBuf::from(text(previous, "checkout"));
+    for name in ["src/a", "src/b"] {
+        assert_eq!(
+            fs::read_to_string(combined.join(name)).unwrap(),
+            format!("contribution to {name}\n")
+        );
+    }
+    await_receipt(&previous["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    let snapshot = w["data"]["rounds"][0]["snapshot"]["sha256"].clone();
+    for task in s.tasks(None).unwrap() {
+        if task["role"] == "reviewer" {
+            s.update(&text(&task,"id"),"succeeded",&json!({"snapshot":snapshot,"verdict":"changes_requested","findings":[{"path":"src/a","line":1,"message":"Fixture revision requested"}]}).to_string(),"").unwrap();
+        }
+    }
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    assert_eq!(w["state"], "working");
+    assert_eq!(w["round"], 1);
+    let next = &w["data"]["rounds"][1];
+    assert_eq!(next["worker_ids"].as_array().unwrap().len(), 1);
+    let revision = PathBuf::from(text(next, "checkout"));
+    for name in ["src/a", "src/b"] {
+        assert_eq!(
+            fs::read_to_string(revision.join(name)).unwrap(),
+            format!("contribution to {name}\n")
+        );
+    }
+}
+
+#[test]
+fn worker_ignore_rule_cannot_silently_discard_a_teammates_new_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    let id = text(&w, "id");
+    let mut request = w["request"].clone();
+    request["scope"] = json!(["src", ".gitignore"]);
+    request["workers"] = json!([{"scope":["src/new"],"prompt":"New file"},{"scope":[".gitignore"],"prompt":"Ignore rules"}]);
+    s.exec(
+        "UPDATE workflows SET request=? WHERE id=?",
+        rusqlite::params![canonical(&request), id],
+    )
+    .unwrap();
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    for task in s.tasks(None).unwrap() {
+        let owned = scope(&task["request"]["scope"]).unwrap().remove(0);
+        let contents = if owned == ".gitignore" {
+            "src/new\n"
+        } else {
+            "teammate contribution\n"
+        };
+        fs::write(PathBuf::from(text(&task, "checkout")).join(owned), contents).unwrap();
+        s.update(&text(&task, "id"), "succeeded", "implemented", "")
+            .unwrap();
+    }
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    assert_eq!(w["state"], "blocked");
+    assert!(w["data"]["rounds"][0].get("snapshot").is_none());
+    let combined = s
+        .directory
+        .join("managed")
+        .join(id)
+        .join("round-0/combined");
+    assert_eq!(
+        fs::read_to_string(combined.join("src/new")).unwrap(),
+        "teammate contribution\n"
+    );
+    assert!(!combined.parent().unwrap().join("check-evidence").exists());
 }

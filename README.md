@@ -18,7 +18,6 @@ With Teem, an explicitly bound Foreman can delegate and receive native completio
 ## Status
 
 Early local-first MVP, developed independently from Codr.
-`docs/SOURCE_SNAPSHOT.json` records the copied files and their original SHA-256 hashes.
 Source: [github.com/tidley/teem](https://github.com/tidley/teem).
 No paid worker run is part of repository setup.
 
@@ -34,11 +33,9 @@ No paid worker run is part of repository setup.
 - `src/checks.rs`: asynchronous approved checks and exact-snapshot receipts.
 - `src/workflows.rs`: bounded implementation/check/two-reviewer/revision progression.
 - `src/approvals.rs`: human-answerable native permission cards; never automatic approval.
-- `tests/reference/`: frozen Python reference, used only for regression tests.
-
-The root `foreman_*.py` links temporarily preserve paths used by an existing
-Python service. New plugin/MCP commands use only Rust. Remove the links after an
-approved service cutover; they are not a Rust compatibility layer.
+- `tests/`: native Rust integration/regression tests and inert legacy JSON/SQL fixtures.
+- `tests/support/subprocess.rs`: native child processes for timeout/output/cleanup tests;
+  this fixture is never installed by the plugin.
 
 ## Install
 
@@ -51,8 +48,10 @@ toolchain are needed at installation; Rust, Python and Cargo are not needed by
 the resulting executable. Git, Linux/systemd, Herdr and OpenCode remain required.
 For a local checkout run `cargo run --locked --release -- install-plugin` before
 `herdr plugin link /absolute/path/to/teem`. See the plugin guide for explicit setup.
-The Rust port does not replace an already running Python supervisor or rewrite
-its service/MCP configuration. Stop the old owner before an approved cutover.
+Existing installations must explicitly replace their service and MCP executable
+paths. Stop and back up the old supervisor before an approved cutover; never run
+two supervisors against the same state directory. Installation alone does not
+change those machine-local settings or replay tasks.
 
 ## Verify
 
@@ -62,11 +61,11 @@ From this directory:
 cargo test --locked
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
-PYTHONPATH=tests/reference python3 -B -m unittest discover -s tests -v
 bun test ui/teem-progress/progress.test.mjs
 ```
 
-Tests use temporary repositories and fake/local transports, not live models or credentials.
+Tests use temporary repositories and fake/local transports, not live models or
+credentials. Neither the runtime nor the tests require a Python interpreter.
 
 ## Setup and limits
 

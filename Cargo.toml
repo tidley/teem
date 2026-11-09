@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Local-first Herdr worker and reviewer supervisor"
+default-run = "teem"
 
 [dependencies]
 anyhow = "1"
@@ -20,3 +21,9 @@ uuid = { version = "1", features = ["v4", "v5"] }
 [[bin]]
 name = "teem"
 path = "src/main.rs"
+
+[[bin]]
+name = "teem-subprocess-fixture"
+path = "tests/support/subprocess.rs"
+test = false
+bench = false
