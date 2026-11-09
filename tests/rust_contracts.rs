@@ -43,6 +43,28 @@ fn reads_legacy_database_and_preserves_native_identities_without_runtime() {
 }
 
 #[test]
+fn new_foreman_can_bind_to_legacy_table_without_replacing_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = rusqlite::Connection::open(tmp.path().join("tasks.sqlite3")).unwrap();
+    db.execute_batch("CREATE TABLE foremen (id TEXT PRIMARY KEY, terminal_id TEXT NOT NULL, notification TEXT); INSERT INTO foremen VALUES ('ses_existing', 'terminal-existing', 'legacy-receipt');").unwrap();
+    drop(db);
+    let s = teem::store::Store::open(tmp.path(), &[], json!({})).unwrap();
+    s.bind("ses_new", "terminal-new").unwrap();
+    s.bind("ses_existing", "terminal-existing").unwrap();
+    assert!(s.bind("ses_existing", "different-terminal").is_err());
+    assert_eq!(
+        s.binding("ses_existing").unwrap()["notification"],
+        "legacy-receipt"
+    );
+    assert_eq!(
+        s.binding("ses_existing").unwrap()["terminal_id"],
+        "terminal-existing"
+    );
+    assert_eq!(s.binding("ses_new").unwrap()["terminal_id"], "terminal-new");
+    assert!(s.binding("ses_new").unwrap()["notification"].is_null());
+}
+
+#[test]
 fn generated_unit_has_no_python_runtime_and_does_not_activate_service() {
     let out = cli(
         std::path::Path::new("/nonexistent/teem.toml"),

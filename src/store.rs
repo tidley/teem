@@ -112,7 +112,7 @@ impl Store {
                 "Foreman terminal changed; inspect binding before replacing it"
             );
             self.exec(
-                "INSERT OR IGNORE INTO foremen VALUES (?,?)",
+                "INSERT OR IGNORE INTO foremen (id, terminal_id) VALUES (?,?)",
                 params![foreman, terminal],
             )?;
             Ok(())
