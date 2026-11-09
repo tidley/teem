@@ -1,0 +1,232 @@
+{
+  "task": {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "role": "worker",
+    "foreman": "ses_foreman",
+    "checkout": "/example/project",
+    "session_id": "ses_foreman_00000000000000000000000000000001",
+    "prompt_id": "msg_foreman_00000000000000000000000000000001",
+    "sparse": false,
+    "runtime_model": {
+      "providerID": "test",
+      "id": "model"
+    },
+    "request": {
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "scope": [
+        "src"
+      ],
+      "prompt": "Implement the requested change",
+      "workflow_id": "00000000-0000-0000-0000-000000000002",
+      "input_tree": null,
+      "native_todos": true
+    }
+  },
+  "session_payload": {
+    "id": "ses_foreman_00000000000000000000000000000001",
+    "title": "Foreman worker 00000000-0000-0000-0000-000000000001",
+    "agent": "build",
+    "model": {
+      "providerID": "test",
+      "id": "model"
+    },
+    "location": {
+      "directory": "/example/project"
+    },
+    "permissions": [
+      {
+        "action": "*",
+        "resource": "*",
+        "effect": "deny"
+      },
+      {
+        "action": "read",
+        "resource": "*",
+        "effect": "allow"
+      },
+      {
+        "action": "glob",
+        "resource": "*",
+        "effect": "allow"
+      },
+      {
+        "action": "grep",
+        "resource": "*",
+        "effect": "allow"
+      },
+      {
+        "action": "todowrite",
+        "resource": "*",
+        "effect": "allow"
+      },
+      {
+        "action": "external_directory",
+        "resource": "/mnt/fastbuild/**",
+        "effect": "allow"
+      },
+      {
+        "action": "edit",
+        "resource": "src",
+        "effect": "allow"
+      },
+      {
+        "action": "edit",
+        "resource": "src/**",
+        "effect": "allow"
+      },
+      {
+        "action": "shell",
+        "resource": "*",
+        "effect": "ask"
+      },
+      {
+        "action": "edit",
+        "resource": ".git",
+        "effect": "deny"
+      },
+      {
+        "action": "edit",
+        "resource": ".git/**",
+        "effect": "deny"
+      },
+      {
+        "action": "edit",
+        "resource": "**/.git",
+        "effect": "deny"
+      },
+      {
+        "action": "edit",
+        "resource": "**/.git/**",
+        "effect": "deny"
+      }
+    ],
+    "metadata": {
+      "herdr_foreman": {
+        "task_id": "00000000-0000-0000-0000-000000000001",
+        "role": "worker",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": [
+          "src"
+        ],
+        "workflow_id": "00000000-0000-0000-0000-000000000002",
+        "input_tree": null,
+        "native_todos": true
+      }
+    }
+  },
+  "prompt_text": "Assigned worker task 00000000-0000-0000-0000-000000000001. Base commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.\nFile scope: src. Sparse checkout: False.\nDo not delegate, merge, publish, deploy, or change runtime permissions. Report results, checks, and unresolved limitations. Execution success is not review approval.\n\nImplement the requested change",
+  "permissions": [
+    {
+      "action": "*",
+      "resource": "*",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "glob",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "grep",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "todowrite",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "external_directory",
+      "resource": "/mnt/fastbuild/**",
+      "effect": "allow"
+    },
+    {
+      "action": "edit",
+      "resource": "src",
+      "effect": "allow"
+    },
+    {
+      "action": "edit",
+      "resource": "src/**",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "*",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": ".git",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": ".git/**",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "**/.git",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "**/.git/**",
+      "effect": "deny"
+    }
+  ],
+  "event": {
+    "id": "event",
+    "task_id": "00000000-0000-0000-0000-000000000001",
+    "foreman": "ses_foreman",
+    "request_id": "00000000-0000-0000-0000-000000000003",
+    "refresh_todos": 0
+  },
+  "event_payload": {
+    "id": "msg_teem_event_00000000000000000000000000000003",
+    "text": "Teem completion event event for task 00000000-0000-0000-0000-000000000001. Use foreman_status to read the recorded result, then foreman_ack after consuming this event. This event is not engineering approval or permission to merge.",
+    "description": "Teem task completed",
+    "metadata": {
+      "teem_event": "event",
+      "teem_task": "00000000-0000-0000-0000-000000000001"
+    },
+    "delivery": "queue",
+    "resume": true
+  },
+  "workflow_event": {
+    "id": "event",
+    "task_id": "00000000-0000-0000-0000-000000000001",
+    "foreman": "ses_foreman",
+    "request_id": "00000000-0000-0000-0000-000000000003",
+    "refresh_todos": 0,
+    "workflow_id": "00000000-0000-0000-0000-000000000002"
+  },
+  "canonical_value": {
+    "text": "\u00e9 \ud83d\ude00",
+    "z": [
+      1,
+      true,
+      null,
+      0.5
+    ]
+  },
+  "workflow_payload": {
+    "id": "msg_teem_workflow_00000000000000000000000000000003",
+    "text": "Teem workflow outcome event event for workflow 00000000-0000-0000-0000-000000000002. Read foreman_status with this workflow_id and give the human one concise result summary: task title, completed or blocked/needs attention, recorded check/review outcomes, and any limitations. Ready means the exact candidate passed its configured checks and both reviews, not integrated. Then foreman_ack this event after consuming it. Do not refresh the checklist, dispatch agents, replay work, approve permissions, integrate, merge or publish. Progress is displayed independently; this is the final result notification, not a progress update.",
+    "description": "Teem workflow finished",
+    "metadata": {
+      "teem_event": "event",
+      "teem_workflow": "00000000-0000-0000-0000-000000000002"
+    },
+    "delivery": "queue",
+    "resume": true
+  },
+  "canonical_digest": "b81c9efb058018e9ded776e6872255abeb153312eddd1012f56cd998ada7ed02"
+}

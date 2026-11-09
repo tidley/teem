@@ -5,26 +5,29 @@ min_herdr_version = "0.9.1"
 description = "One visible Foreman with two headless workers and two reviewers"
 platforms = ["linux"]
 
+[[build]]
+command = ["cargo", "run", "--locked", "--release", "--", "install-plugin"]
+
 [[startup]]
-command = ["python3", "foreman_plugin.py", "service-start"]
+command = ["bin/teem", "service-start"]
 
 [[actions]]
 id = "bind"
 title = "Teem: bind focused Foreman conversation"
 contexts = ["workspace"]
-command = ["python3", "foreman_plugin.py", "bind"]
+command = ["bin/teem", "bind"]
 
 [[actions]]
 id = "start"
 title = "Teem: start configured supervisor"
 contexts = ["workspace"]
-command = ["python3", "foreman_plugin.py", "service-start"]
+command = ["bin/teem", "service-start"]
 
 [[actions]]
 id = "status"
 title = "Teem: show task status"
 contexts = ["workspace"]
-command = ["python3", "foreman_plugin.py", "open-status"]
+command = ["bin/teem", "open-status"]
 
 [[panes]]
 id = "status"
@@ -32,4 +35,4 @@ title = "Teem task status"
 placement = "popup"
 width = "90%"
 height = "80%"
-command = ["python3", "foreman_plugin.py", "board"]
+command = ["bin/teem", "board"]

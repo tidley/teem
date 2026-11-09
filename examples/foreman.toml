@@ -15,7 +15,7 @@ allowed_checkouts = []
 # [[projects.example.checks]]
 # name = "tests"
 # kind = "test"
-# argv = ["python3", "-B", "-m", "unittest", "discover", "-s", "tests", "-v"]
+# argv = ["cargo", "test", "--locked"]
 # cwd = "."
 # timeout = 300
 # output_limit = 1048576

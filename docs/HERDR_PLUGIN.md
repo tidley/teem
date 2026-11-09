@@ -7,7 +7,7 @@ Herdr 0.9.1 accepted the original manifest in a temporary, isolated plugin regis
 ## What it provides
 
 - One explicitly registered Foreman conversation in Herdr, with optional independent Codr/White Noise phone access.
-- A Python supervisor with persistent SQLite task and event records.
+- A native Rust supervisor with persistent SQLite task and event records.
 - Two implementation slots and two reviewer slots per managed task. Legacy tasks share two slots per role.
 - Headless OpenCode sessions. Workers do not create Herdr panes or additional Codr chats.
 - Structured MCP delegation tools bound to one registered Foreman session.
@@ -21,7 +21,7 @@ reviews require a strict snapshot-bound JSON verdict and independently checked g
 
 ## Requirements
 
-- Linux, Python 3.11+, Git, and a systemd user manager.
+- Linux, Git, and a systemd user manager. Building requires Rust 1.85+ and a C toolchain.
 - Herdr 0.9.1+ for the plugin interface.
 - OpenCode's current `/api/session` protocol, as inspected in the local 2.1.4 source.
   This is not the older `/session` SDK protocol. Other OpenCode versions need contract qualification.
@@ -29,14 +29,17 @@ reviews require a strict snapshot-bound JSON verdict and independently checked g
 - Existing authorised checkout roots for manual tasks, or an explicit managed-project policy.
 
 The plugin never launches, elects, replaces, or restarts OpenCode's background service.
-Python uses only its standard library. Tests do not use live models or services.
+The runtime does not invoke Python. The Python reference under `tests/reference`
+is used only for regression qualification. Tests do not use live models or services.
 Teem does not require Codr, White Noise, a bridge account, or a Codr local control socket.
 
 ## Explicit local setup
 
 These commands change local configuration. They are operator instructions, not steps already performed.
 
-1. Review `herdr-plugin.toml`, `foreman_plugin.py`, `foreman_supervisor.py`, and `foreman_runtime.py`.
+1. Review `herdr-plugin.toml` and the Rust modules under `src/`.
+   Install with `herdr plugin install tidley/teem`, or build a local checkout with
+   `cargo run --locked --release -- install-plugin` before linking it.
 2. Link the local plugin:
 
    ```sh
@@ -52,7 +55,7 @@ These commands change local configuration. They are operator instructions, not s
 7. Generate a service unit with the absolute configuration path:
 
    ```sh
-   python3 -B foreman_plugin.py --config /absolute/plugin/config.toml service-unit
+    bin/teem --config /absolute/plugin/config.toml service-unit
    ```
 
 8. Review and save that output as `~/.config/systemd/user/teem.service`.
@@ -78,7 +81,7 @@ Do not overwrite an existing OpenCode configuration file.
       "teem": {
         "type": "local",
         "command": [
-          "python3", "-B", "/home/tom/code/teem/foreman_plugin.py",
+          "/absolute/path/to/teem/bin/teem",
           "--config", "/absolute/plugin/config.toml",
           "mcp", "--foreman", "ses_EXACT_REGISTERED_SESSION"
         ],
@@ -388,7 +391,7 @@ Use the plugin's status action or run `herdr plugin pane open --plugin local.tee
 For machine-readable status:
 
 ```sh
-python3 -B foreman_plugin.py --config /absolute/plugin/config.toml \
+bin/teem --config /absolute/plugin/config.toml \
   status --foreman ses_EXACT_REGISTERED_SESSION
 ```
 
@@ -444,7 +447,11 @@ Herdr and the underlying OpenCode runtime retain responsibility for their own re
 ## Verification
 
 ```sh
-python3 -B -m unittest discover -s tests -v
+cargo test --locked
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
+PYTHONPATH=tests/reference python3 -B -m unittest discover -s tests -v
+bun test ui/teem-progress/progress.test.mjs
 ```
 
 Tests use temporary state, temporary Git repositories, fake runtime transports, and a local fake HTTP server.

@@ -108,8 +108,9 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(action["command"][-1], "open-status")
         self.assertEqual([p["placement"] for p in manifest["panes"]], ["popup"])
         for entry in manifest["actions"] + manifest["startup"] + manifest["panes"]:
-            self.assertEqual(entry["command"][0], "python3")
-            self.assertTrue((root / entry["command"][1]).is_file())
+            self.assertEqual(entry["command"][0], "bin/teem")
+        self.assertEqual(manifest["build"][0]["command"],
+                         ["cargo", "run", "--locked", "--release", "--", "install-plugin"])
 
     def test_status_action_opens_popup_through_running_herdr(self):
         from foreman_plugin import open_status
@@ -127,7 +128,7 @@ class PluginTests(unittest.TestCase):
         config.write_text('enabled = false\nstate_dir = "' + str(self.root / "state") + '"\nallowed_checkouts = []\n')
         self.assertFalse(load_config(config)["enabled"])
         root = Path(__file__).resolve().parents[1]
-        result = subprocess.run([sys.executable, "-B", str(root / "foreman_plugin.py"),
+        result = subprocess.run([sys.executable, "-B", str(root / "tests/reference/foreman_plugin.py"),
                                  "--config", str(config), "serve"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("disabled", result.stdout)
@@ -144,7 +145,7 @@ class PluginTests(unittest.TestCase):
 
     def test_cli_no_longer_accepts_codr_notification_configuration(self):
         root = Path(__file__).resolve().parents[1]
-        result = subprocess.run([sys.executable, "-B", str(root / "foreman_plugin.py"), "bind", "--help"],
+        result = subprocess.run([sys.executable, "-B", str(root / "tests/reference/foreman_plugin.py"), "bind", "--help"],
                                 capture_output=True, text=True, check=True)
         self.assertNotIn("notification-file", result.stdout)
 

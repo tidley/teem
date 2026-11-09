@@ -1,0 +1,192 @@
+[
+  {
+    "name": "foreman_submit",
+    "description": "Queue one legacy headless task and return immediately. Legacy tasks share two slots per role; managed tasks have independent teams. Queue acceptance is not execution. Reviews require a clean, complete checkout at a fixed commit. Workers may use sparse checkouts, whose tests cannot qualify integration. Never retry with a new UUID after an uncertain response.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "Retain one canonical UUID for this immutable request"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "worker",
+            "reviewer"
+          ]
+        },
+        "checkout": {
+          "type": "string",
+          "description": "An explicitly authorised absolute Git checkout root"
+        },
+        "revision": {
+          "type": "string",
+          "description": "Full Git commit ID matching checkout HEAD"
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Bounded assignment, acceptance criteria, and required checks"
+        }
+      },
+      "required": [
+        "task_id",
+        "role",
+        "checkout",
+        "revision",
+        "scope",
+        "prompt"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "foreman_status",
+    "description": "Read this Foreman's task state, results, and unacknowledged completion events. Worker permissions appear as native cards here for the human to Approve once or Reject worker batch. Native rejection declines all pending permissions in that worker session. Do not answer permission cards or interpret conversational consent as a permission reply. Success means native execution ended, not that review or integration checks passed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "workflow_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "foreman_ack",
+    "description": "Acknowledge one completion event after reading its result. Does not approve or merge code.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "foreman_plan",
+    "description": "Define the current ordered checklist for this Foreman. Replace old completed work, preserving unrelated active work. Link execution items to retained task UUIDs before submission; the supervisor owns their status. Unlinked planning/verification items need an explicit status, based on evidence, not worker success. The passive Teem TUI displays supervisor progress. Do not copy it to native todowrite or poll to render it. No worker is dispatched and no Foreman turn is triggered by progress changes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Stable short plan item ID"
+              },
+              "content": {
+                "type": "string",
+                "description": "Short single-line checklist label"
+              },
+              "task_id": {
+                "type": "string",
+                "description": "Canonical UUID; do not supply status for linked execution"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "completed",
+                  "cancelled"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "content"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "foreman_workflow",
+    "description": "Delegate implementation, approved checks, two independent exact-snapshot reviews and bounded revisions. Use a project alias from foreman_status.projects and acceptance criteria. The supervisor chooses separate checkouts and base revisions; never ask the human for paths or hashes. No model override, arbitrary commands, commits, integration or publication. Optionally split a task into up to two workers with disjoint file scopes. Each task has its own two implementation and two review slots; additional tasks do not share them. Their combined candidate must pass checks and both reviews. Revisions use one worker on that candidate; stay within the user's authorised scope. Retain one UUID per immutable workflow, never replace uncertain work. The workflow appears automatically in passive progress. Do not call todowrite for Teem or wait/poll to update it. Finish your dispatch response so the human can keep talking. Progress and individual agent completions do not wake you. One final workflow outcome asks for a concise result summary, not checklist maintenance.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string",
+          "description": "Short human-readable task title; no workflow codes",
+          "maxLength": 100
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "workers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "prompt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "scope",
+              "prompt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "prompt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_id",
+        "project",
+        "scope",
+        "prompt"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

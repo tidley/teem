@@ -1,7 +1,8 @@
 # Teem
 
 A local Herdr plugin with one visible Foreman and up to two workers plus two reviewers per managed task.
-The supervisor is code, not another agent. Python 3.11 standard library only.
+The supervisor is a native Rust executable, not another agent. Python is not
+required at runtime. The OpenCode TUI adapter uses the host's TypeScript interface.
 
 ```text
 Herdr ↔ Foreman ↔ Teem supervisor ↔ Workers/reviewers
@@ -24,22 +25,44 @@ No paid worker run is part of repository setup.
 ## Components
 
 - `herdr-plugin.toml`: Teem actions, startup hook, and transient status popup.
-- `foreman_plugin.py`: plugin commands, fixed-binding MCP delegation tools, and optional service unit output.
-- `foreman_supervisor.py`: SQLite tasks, per-task 2+2 limits, exclusive checkout ownership, and completion events.
-- `foreman_runtime.py`: headless OpenCode transport, native completion admission, and permission rules.
-- `foreman_progress.py`: persistent plans and atomic private progress snapshots; no model-driven UI refresh.
+- `src/plugin.rs`: Herdr commands, fixed-binding MCP tools, and service unit output.
+- `src/store.rs`: SQLite tasks, per-task 2+2 limits, and exclusive checkout ownership.
+- `src/runtime.rs`: loopback-only OpenCode HTTP, completion admission and permission rules.
+- `src/progress.rs`: plans, atomic private progress snapshots and native todo observations.
 - `ui/teem-progress`: passive OpenCode TUI checklist; retains native todos for other conversations.
-- `foreman_checkouts.py`: private complete clones and hashed uncommitted candidate snapshots.
-- `foreman_checks.py`: asynchronous project-approved checks and bound output receipts.
-- `foreman_workflows.py`: bounded implementation/check/two-reviewer/revision progression.
-- `foreman_workflow_progress.py` and `foreman_agent_progress.py`: readable phase/agent checklists and read-only native todo observations.
+- `src/checkouts.rs`: private complete clones and hashed uncommitted candidate snapshots.
+- `src/checks.rs`: asynchronous approved checks and exact-snapshot receipts.
+- `src/workflows.rs`: bounded implementation/check/two-reviewer/revision progression.
+- `src/approvals.rs`: human-answerable native permission cards; never automatic approval.
+- `tests/reference/`: frozen Python reference, used only for regression tests.
+
+The root `foreman_*.py` links temporarily preserve paths used by an existing
+Python service. New plugin/MCP commands use only Rust. Remove the links after an
+approved service cutover; they are not a Rust compatibility layer.
+
+## Install
+
+```sh
+herdr plugin install tidley/teem
+```
+
+The manifest builds and installs `bin/teem` with Cargo. Rust 1.85+ and a native C
+toolchain are needed at installation; Rust, Python and Cargo are not needed by
+the resulting executable. Git, Linux/systemd, Herdr and OpenCode remain required.
+For a local checkout run `cargo run --locked --release -- install-plugin` before
+`herdr plugin link /absolute/path/to/teem`. See the plugin guide for explicit setup.
+The Rust port does not replace an already running Python supervisor or rewrite
+its service/MCP configuration. Stop the old owner before an approved cutover.
 
 ## Verify
 
 From this directory:
 
 ```sh
-python3 -B -m unittest discover -s tests -v
+cargo test --locked
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
+PYTHONPATH=tests/reference python3 -B -m unittest discover -s tests -v
 bun test ui/teem-progress/progress.test.mjs
 ```
 

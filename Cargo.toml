@@ -1,0 +1,22 @@
+[package]
+name = "teem"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Local-first Herdr worker and reviewer supervisor"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+signal-hook = "0.3"
+tempfile = "3"
+toml = "0.8"
+uuid = { version = "1", features = ["v4", "v5"] }
+
+[[bin]]
+name = "teem"
+path = "src/main.rs"
