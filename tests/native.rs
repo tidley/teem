@@ -2724,6 +2724,73 @@ fn wrong_snapshot_reviewer_execution_does_not_qualify_workflow() {
     assert_eq!(s.workflow(&id).unwrap()["state"], "blocked");
 }
 #[test]
+fn sidebar_metadata_is_additive_and_batch_checks_are_individually_pending() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = workflow_fixture(tmp.path(), false);
+    s.exec(
+        "UPDATE workflows SET state='checking',data=? WHERE id=?",
+        rusqlite::params![
+            json!({"rounds":[{"check_handle":{"pending":true}}]}).to_string(),
+            text(&w, "id")
+        ],
+    )
+    .unwrap();
+    let p = progress::snapshot(&s, "ses_test").unwrap();
+    let items = array(&p["items"]);
+    assert_eq!(items[0]["sidebar"]["project"], "project");
+    assert_eq!(items[0]["sidebar"]["title"], progress::title(&w));
+    assert_eq!(items[1]["sidebar"]["label"], "Implementation");
+    let check = items
+        .iter()
+        .find(|r| r["sidebar"]["kind"] == "check")
+        .unwrap();
+    assert_eq!(check["status"], "pending");
+    assert!(text(check, "content").contains("individual result pending"));
+    assert!(text(check, "label").starts_with(&text(&items[0], "label")));
+    assert_eq!(check["workflow_id"], w["id"]);
+    for (item, todo) in items.iter().zip(array(&p["todos"])) {
+        assert_eq!(item["content"], todo["content"]);
+        assert_eq!(item["status"], todo["status"]);
+    }
+    assert_eq!(
+        items.last().unwrap()["sidebar"]["label"],
+        "Review · tests/scope"
+    );
+    assert_eq!(
+        s.workflow(&text(&w, "id")).unwrap()["request"],
+        w["request"]
+    );
+}
+
+#[test]
+fn sidebar_check_and_review_metadata_retains_authoritative_failure_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = workflow_fixture(tmp.path(), false);
+    let evidence = json!({"name":"tests","returncode":1,"timed_out":false,"output_limited":false});
+    let data = json!({"rounds":[{"check_result":{"results":[evidence]},"review_results":[{"verdict":"changes_requested","findings":[{"message":"Keep evidence"}]}]}]});
+    s.exec(
+        "UPDATE workflows SET state='reviewing',data=? WHERE id=?",
+        rusqlite::params![canonical(&data), text(&w, "id")],
+    )
+    .unwrap();
+    let p = progress::snapshot(&s, "ses_test").unwrap();
+    let items = array(&p["items"]);
+    let check = items
+        .iter()
+        .find(|r| r["sidebar"]["kind"] == "check")
+        .unwrap();
+    assert_eq!(check["status"], "cancelled");
+    assert!(text(check, "content").contains("failed; see recorded check evidence"));
+    let review = items
+        .iter()
+        .find(|r| r["sidebar"]["label"] == "Review · correctness")
+        .unwrap();
+    assert_eq!(review["status"], "cancelled");
+    assert!(text(review, "content").contains("changes requested"));
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap()["data"], data);
+}
+
+#[test]
 fn review_execution_completion_is_not_a_passing_verdict_in_progress() {
     let tmp = tempfile::tempdir().unwrap();
     let (s, _, id, _) = reviewing_fixture(tmp.path());

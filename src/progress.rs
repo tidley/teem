@@ -138,6 +138,7 @@ fn agent_detail(s: &Store, w: &Value, id: &Value, suffix: &str, label: &str) -> 
             );
             r["source"] = json!("agent-reported");
             r["task_id"] = id.clone();
+            r["sidebar"] = json!({"kind":"reported","label":text(t,"content")});
             r
         })
         .collect())
@@ -172,6 +173,7 @@ pub fn workflow_rows(s: &Store, f: &str) -> Result<Vec<Value>> {
             desc,
         );
         head["workflow_state"] = json!(state);
+        head["sidebar"] = json!({"project":w["project"],"title":title(&w),"revision":array(&w["data"]["rounds"]).len().saturating_sub(1)});
         rows.push(head);
         let rounds = array(&w["data"]["rounds"]);
         let number = rounds.len().saturating_sub(1);
@@ -209,6 +211,7 @@ pub fn workflow_rows(s: &Store, f: &str) -> Result<Vec<Value>> {
             let mut r = row(&w, &suffix, &label, &stat, &desc);
             r["task_id"] = id.clone();
             r["task_state"] = json!(st);
+            r["sidebar"] = json!({"kind":"implementation","label":if ids.len()>1 {format!("Implementation {}",i+1)} else {"Implementation".into()}});
             rows.push(r);
             rows.extend(agent_detail(s, &w, id, &suffix, &label)?);
         }
@@ -223,20 +226,19 @@ pub fn workflow_rows(s: &Store, f: &str) -> Result<Vec<Value>> {
             } else if !round["check_result"].is_null() {
                 ("cancelled", "not run; check batch stopped")
             } else if !round["check_handle"].is_null() {
-                (
-                    "in_progress",
-                    "check batch active; individual result pending",
-                )
+                ("pending", "check batch active; individual result pending")
             } else {
                 ("pending", "not run yet")
             };
-            rows.push(row(
+            let mut r = row(
                 &w,
                 &format!("{suffix}_check_{i}"),
                 &format!("{prefix} · Check: {}", text(c, "name")),
                 status,
                 desc,
-            ));
+            );
+            r["sidebar"] = json!({"kind":"check","label":text(c,"name")});
+            rows.push(r);
         }
         for (i, focus) in ["Correctness review", "Tests and scope review"]
             .iter()
@@ -261,6 +263,7 @@ pub fn workflow_rows(s: &Store, f: &str) -> Result<Vec<Value>> {
             let mut r = row(&w, &suffix, &label, &status, &desc);
             r["task_id"] = id.clone();
             r["task_state"] = json!(st);
+            r["sidebar"] = json!({"kind":"review","label":if i==0 {"Review · correctness"} else {"Review · tests/scope"}});
             rows.push(r);
             rows.extend(agent_detail(s, &w, &id, &suffix, &label)?);
         }

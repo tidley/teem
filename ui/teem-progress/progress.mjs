@@ -1,5 +1,119 @@
 // Pure display selection. These observations never qualify checks or reviews.
 const statuses = new Set(['pending', 'in_progress', 'completed', 'cancelled'])
+const clean = text => text.replace(/[\x00-\x1f\x7f]/g, ' ')
+const short = (text, limit) => {
+  const chars = Array.from(clean(text))
+  return chars.length > limit ? chars.slice(0, limit - 1).join('') + '…' : chars.join('')
+}
+const bounded = (value, limit = 2000) => typeof value === 'string' && value.length > 0 && value.length <= limit
+const workflowStates = new Map(Object.entries({ queued: 'queued', preparing: 'preparing', working: 'implementation',
+  snapshotting: 'snapshotting', checking: 'check batch', review_preparing: 'preparing reviews',
+  reviewing: 'reviews', uncertain: 'blocked: uncertain' }))
+const checkNames = new Map(Object.entries({ test: 'Tests', tests: 'Tests', 'rust-tests': 'Tests',
+  fmt: 'Format', format: 'Format', 'rust-format': 'Format', clippy: 'Clippy', 'rust-clippy': 'Clippy', 'tui-tests': 'UI tests' }))
+
+// Optional display metadata is not evidence. Old projections remain usable, and
+// malformed additions fall back to their original rows rather than clearing work.
+export function sidebarGroups(progress) {
+  const fallback = () => [{ id: 'compact-unavailable', rows: [{
+    content: 'Teem compact view unavailable · showing full rows', status: 'pending',
+  }] }, { id: 'legacy', rows: progress.todos ?? [] }]
+  if (!Array.isArray(progress.items) || progress.items.length > 2000) return fallback()
+  if (progress.todos && progress.items.length !== progress.todos.length) return fallback()
+  const groups = []
+  const workflows = new Map()
+  const ended = new Set()
+  const valid = item => item && bounded(item.content) && statuses.has(item.status)
+  const workflowID = item => bounded(item?.workflow_id, 128) && /^[a-zA-Z0-9_-]+$/.test(item.workflow_id) ? item.workflow_id : undefined
+  for (const item of progress.items) {
+    if (!valid(item)) continue
+    const id = workflowID(item)
+    if (id && bounded(item.task_id, 128) && ['succeeded', 'failed', 'interrupted'].includes(item.task_state)) {
+      ended.add(`${id}/${item.task_id}`)
+    }
+    if (!id || !bounded(item.workflow_state, 80) || !bounded(item.label) || workflows.has(id)) continue
+    const meta = item.sidebar
+    const title = bounded(meta?.title) ? meta.title : item.label
+    const project = bounded(meta?.project, 300) && title !== meta.project && !title.startsWith(meta.project + ' · ') ? meta.project : ''
+    workflows.set(id, { id, title: short(title, 32), project, prefix: item.label + ' · ',
+      heading: item, rows: [] })
+  }
+  // Extend colliding short IDs instead of conflating concurrent same-title work.
+  const ids = [...workflows.keys()].sort()
+  for (const [index, id] of ids.entries()) {
+    const group = workflows.get(id)
+    let length = 8
+    for (const neighbor of [ids[index - 1], ids[index + 1]]) {
+      if (!neighbor) continue
+      let common = 0
+      while (common < id.length && common < neighbor.length && id[common] === neighbor[common]) common++
+      length = Math.max(length, common + 1)
+    }
+    group.description = `${group.project ? short(group.project, 20) + ' · ' : ''}#${group.id.slice(0, length)}`
+    if (Number.isInteger(group.heading.sidebar?.revision) && group.heading.sidebar.revision > 0 && group.heading.sidebar.revision <= 3) {
+      group.description += ` · revision ${group.heading.sidebar.revision}`
+    }
+  }
+  const added = new Set()
+  const manual = (item, index) => groups.push({ id: `manual-${index}`, rows: [item] })
+  progress.items.forEach((item, index) => {
+    if (!valid(item)) {
+      manual(progress.todos?.[index] ?? { content: 'Progress row unavailable · inspect status', status: 'pending' }, index)
+      return
+    }
+    const group = workflows.get(workflowID(item))
+    if (!group || (item.workflow_state && item !== group.heading)) {
+      manual({ content: clean(item.content), status: item.status }, index)
+      return
+    }
+    if (!added.has(group.id)) {
+      groups.push({ id: group.id, title: group.title, description: group.description,
+        state: workflowStates.get(group.heading.workflow_state) ?? 'unknown state', rows: group.rows })
+      added.add(group.id)
+    }
+    if (item === group.heading) return
+    const reported = item.source === 'agent-reported'
+    const label = bounded(item.label) ? item.label : ''
+    const detail = label && item.content.startsWith(label + ' — ') ? item.content.slice(label.length + 3) : ''
+    const meta = item.sidebar
+    let kind = ['implementation', 'check', 'review', 'reported'].includes(meta?.kind) && bounded(meta.label) ? meta.kind : undefined
+    let name = kind ? meta.label : label.startsWith(group.prefix) ? label.slice(group.prefix.length).replace(/^Revision \d+ · /, '') : ''
+    if (!kind) {
+      if (/^Worker(?: \d+)?$/.test(name)) { kind = 'implementation'; name = name.replace('Worker', 'Implementation') }
+      else if (name.startsWith('Check: ')) { kind = 'check'; name = name.slice(7) }
+      else if (name === 'Correctness review') { kind = 'review'; name = 'Review · correctness' }
+      else if (name === 'Tests and scope review') { kind = 'review'; name = 'Review · tests/scope' }
+    }
+    if (reported) {
+      if (item.status === 'completed' || (bounded(item.task_id, 128) && ended.has(`${group.id}/${item.task_id}`))) return
+      if (kind !== 'reported') name = name.replace(/^.*? · reported: /, '')
+      group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: short(`Reported: ${name || item.content}`, 56), status: item.status, reported: true })
+      return
+    }
+    if (kind === 'implementation' && item.status === 'completed') return
+    if (!kind || kind === 'reported' || !detail) {
+      group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: clean(item.content), status: item.status })
+      return
+    }
+    if (kind === 'check') name = checkNames.get(name.toLowerCase()) ?? name
+    let state = ({ pending: 'pending', in_progress: 'active', completed: 'passed', cancelled: 'cancelled' })[item.status]
+    let status = item.status
+    if (detail.includes('individual result pending')) { state = 'pending (batch)'; status = 'pending' }
+    else if (detail.includes('not run;')) state = 'not run'
+    else if (detail.includes('verdict pending')) state = 'verdict pending'
+    else if (detail.includes('changes requested')) state = 'changes requested'
+    else if (detail.includes('failed')) state = 'failed'
+    else if (detail.includes('human approval')) state = 'blocked: approval'
+    else if (detail.includes('uncertain')) state = 'blocked: uncertain'
+    else if (detail === 'running') state = 'running'
+    else if (detail === 'queued') state = 'queued'
+    else if (detail === 'starting') state = 'starting'
+    else if (detail === 'native input accepted') state = 'accepted'
+    else if (detail === 'interrupted') state = 'interrupted'
+    group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: `${short(name, 28)} · ${state}`, status })
+  })
+  return groups
+}
 
 function todos(value) {
   if (!Array.isArray(value) || value.length > 2000) throw new Error('Invalid progress rows')
@@ -29,14 +143,19 @@ export function parseProjection(value) {
     throw new Error('Invalid Teem projection')
   }
   return { updated_at: value.updated_at, sessions: Object.fromEntries(Object.entries(value.sessions).map(
-    ([id, progress]) => [id, { todos: todos(progress?.todos), ...latestResult(progress?.latest_result) }],
+    ([id, progress]) => {
+      const rows = todos(progress?.todos)
+      return [id, { todos: rows, ...latestResult(progress?.latest_result),
+        ...(progress && Object.hasOwn(progress, 'items') ? { groups: sidebarGroups({ ...progress, todos: rows }) } : {}),
+      }]
+    },
   )) }
 }
 
 export function selectProgress(projection, sessionID, now = Date.now() / 1000) {
   const session = projection?.sessions[sessionID]
   if (!session) return undefined
-  return { todos: session.todos, ...latestResult(session.latest_result), passive: true,
+  return { todos: session.todos, ...(session.groups ? { groups: session.groups } : {}), ...latestResult(session.latest_result), passive: true,
     stale: now - projection.updated_at > 15 || projection.updated_at > now + 5 }
 }
 

@@ -39,7 +39,9 @@ export default Plugin.define({
           context.data.session.message.list(props.sessionID),
           context.data.session.get(props.sessionID)?.revert?.messageID,
         ))
-        const remaining = createMemo(() => list().filter(t => t.status === 'pending' || t.status === 'in_progress').length)
+        const groups = createMemo(() => passive()?.groups ?? [{ id: 'native', rows: list() }])
+        const remaining = createMemo(() => groups().flatMap(g => g.rows).filter(t => t.status === 'pending' || t.status === 'in_progress').length)
+        const reported = createMemo(() => groups().some(g => g.rows.some(t => t.reported)))
         const theme = context.theme
         return <Show when={passive() || list().length > 0}>
           <box>
@@ -50,15 +52,27 @@ export default Plugin.define({
               <text fg={theme.text.feedback.warning.base}>Progress unavailable · last observation</text>
             </Show>
             <Show when={open()}>
-              <Show when={passive() && !passive()?.stale && list().length === 0}>
+              <Show when={passive() && !passive()?.stale && groups().every(g => !g.title && g.rows.length === 0)}>
                 <text fg={theme.text.muted}>No active tasks · results remain in status history</text>
               </Show>
-              <For each={list()}>{todo => <box flexDirection="row" gap={0}>
-                <text flexShrink={0} fg={todo.status === 'in_progress' ? theme.text.feedback.warning.base : theme.text.muted}>
-                  {({ completed: '[✓]', in_progress: '[•]', cancelled: '[-]', pending: '[ ]' })[todo.status]}{' '}
-                </text>
-                <text flexGrow={1} wrapMode="word" fg={theme.text.muted}>{todo.content}</text>
+              <Show when={reported()}>
+                <text wrapMode="word" fg={theme.text.muted}>Reported = agent claim, not evidence</text>
+              </Show>
+              <For each={groups()}>{group => <box>
+                <Show when={group.title}>
+                  <text wrapMode="word" fg={theme.text.base}>{group.title}</text>
+                  <text wrapMode="word" fg={theme.text.muted}>{group.description} · {group.state}</text>
+                </Show>
+                <For each={group.rows}>{todo => <box flexDirection="row" gap={0}>
+                  <text flexShrink={0} fg={todo.status === 'in_progress' ? theme.text.feedback.warning.base : theme.text.muted}>
+                    {({ completed: '[✓]', in_progress: '[•]', cancelled: '[-]', pending: '[ ]' })[todo.status]}{' '}
+                  </text>
+                  <text flexGrow={1} wrapMode="word" fg={theme.text.muted}>{todo.content}</text>
+                </box>}</For>
               </box>}</For>
+              <Show when={passive()}>
+                <text fg={theme.text.muted}>Details/history: foreman_status</text>
+              </Show>
               <Show when={passive()?.latest_result}>{outcome => <box marginTop={1}>
                 <text fg={theme.text.base}>Latest result · {outcome().title}</text>
                 <text wrapMode="word" fg={outcome().state === 'ready' ? theme.text.muted : theme.text.feedback.warning.base}>
