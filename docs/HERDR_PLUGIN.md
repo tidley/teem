@@ -98,7 +98,7 @@ Check the model runtime's configuration reload requirements before use.
 The MCP tools appear with their own schemas and descriptions. They do not depend on an `AGENTS.md` role instruction.
 
 - `foreman_submit`: provide a retained UUID, role, checkout, full base commit, relative file scope, and assignment.
-- `foreman_status`: read tasks, exact native session IDs, results, unacknowledged events, and current `progress.todos`.
+- `foreman_status`: bounded task/workflow summaries, exact native session IDs, authoritative counts, check/review outcomes, unacknowledged events, and explicit paginated detail retrieval. See [status modes](#bounded-status-and-evidence-retrieval).
 - `foreman_ack`: acknowledge one event after consuming its result. This does not approve code.
 - `foreman_plan`: define this conversation's ordered checklist, linking execution items to retained task UUIDs.
 - `foreman_workflow`: supply a configured project alias, retained workflow UUID, scope and acceptance criteria. No checkout paths or base hashes are needed.
@@ -229,8 +229,9 @@ Check launch and preparation markers are durable. Unknown side-effect windows re
 all paths/evidence without automatic replay. A missing/late receipt or uncertain native
 task can reconcile by reads; no replacement runs are launched merely to recover it.
 Dismissed approvals and interrupted filesystem preparation may need manual inspection.
-Status includes each round's paths, snapshot, check evidence, reviewer IDs/verdicts and
-specific blocker. Review findings and receipts are preserved even after revision.
+Summary status includes the current round's snapshot, check evidence, both reviewer
+IDs/verdicts and specific blocker. Explicit detail includes every round's paths and
+full evidence. Review findings and receipts are preserved even after revision.
 Readiness is policy-specific and not a substitute for combined integration verification.
 
 The workflow itself appears automatically in supervisor-backed progress. It shows
@@ -274,7 +275,8 @@ and model-supplied statuses on linked items are rejected. Replacing a plan must
 preserve unrelated planning items. An empty list explicitly clears the managed plan.
 Existing conversations are not subscribed automatically and their todos are untouched.
 
-The authoritative snapshot is `foreman_status.progress`. Its `items` distinguish
+The authoritative checklist snapshot is `foreman_status` detail section `progress`.
+Summary `progress.items` is paginated (not a full native todo replacement). Its items distinguish
 `supervisor` execution from manual `foreman-plan` state. Its `todos` contain native
 todo-compatible content and statuses. Worker success produces “execution ended;
 tests/review not implied.” Failed/interrupted work is not shown as completed.
@@ -315,7 +317,7 @@ the outcome event. No progress rendering or new worker run is requested. This fi
 summary can queue behind a user turn; individual stages still cost no Foreman turns.
 An uncertain notification is reconciled by exact native ID reads, never resent.
 
-`foreman_status.progress.latest_result` also keeps one terminal result outside the
+Summary `foreman_status.progress.latest_result` also keeps one terminal result outside the
 active checklist. The TUI shows its readable title and completed/blocked/needs-attention
 summary, including “not integrated” for ready candidates. This remains visible when
 active todos clear. New outcomes are ordered by recorded finish time. Older finished
@@ -416,6 +418,108 @@ For machine-readable status:
 bin/teem --config /absolute/plugin/config.toml \
   status --foreman ses_EXACT_REGISTERED_SESSION
 ```
+
+### Bounded status and evidence retrieval
+
+This is the source contract; it does **not** mean an installed executable, MCP
+connection, UI, or existing session has been upgraded. Installation/configuration
+changes require separate authorisation. No directory permissions are expanded.
+
+The default `foreman_status {}` is a summary of at most **24,000 bytes** when
+pretty-printed as JSON. MCP returns multiline text, rather than one enormous JSON
+line. Full requests, prompts, project command policies, prior rounds and agent todos
+are not embedded in the routine summary. No stored history is shortened or removed.
+
+- `counts` covers **all matching records**, before pagination. `foreman_counts`
+  covers this bound Foreman's entire team even when filtered. Both distinguish
+  workers/reviewers and queued, starting, accepted, running, uncertain, succeeded,
+  failed and interrupted. `active` counts reserved slots: starting + accepted +
+  running + uncertain. It is **not** the running count. Queued tasks do not occupy
+  slots. Uncertain tasks still reserve theirs. Agent todos are not execution evidence.
+- Workflow summaries include title/state, current snapshot, current-round worker
+  result excerpts, all configured checks (up to the native policy maximum of eight),
+  actual return codes/timeout/output-limit/error evidence, and both recorded review
+  verdicts with snapshot binding. A null verdict is not an approval, even if reviewer
+  execution succeeded. Checks not reached after a failure are labelled not run.
+- Workflow `detail` follows the later integration receipt; `candidate_detail` retains
+  the original candidate outcome when a receipt exists. `ready` is not integration;
+  applied is not committed; committed is not published, installed, or running.
+  Publication/runtime are explicitly not checked by status.
+- Summary strings have a visible truncation suffix with their original byte count
+  (normally a 160-byte excerpt, 120 for titles). At most two findings per reviewer
+  are shown, with `findings_total` and `findings_truncated`. Missing failure text or
+  worker limitations must be read through detail before claiming the outcome consumed.
+  `rounds_total`, `workers_total`, `review_results_total`, check totals and page totals
+  expose collection bounds. Earlier rounds remain evidence history, not new runs.
+
+Arguments shared by MCP and CLI:
+
+| MCP argument | CLI flag | Meaning |
+| --- | --- | --- |
+| `workflow_id` | `--workflow-id` | One workflow and its related tasks/events/approvals/progress |
+| `task_id` | `--task-id` | One task, its related records and its parent workflow; mutually exclusive with workflow_id |
+| `mode` | `--mode` | `summary` (default) or `detail` |
+| `section` | `--section` | `overview` (default), `workflows`, `tasks`, `events`, `approvals`, `projects`, `progress`, `agent_progress`, `progress_delivery`, or detail-only `check_output` |
+| `offset` | `--offset` | Summary row offset; detail UTF-8 byte offset in the JSON-encoded selected value |
+| `limit` | `--limit` | Summary 1–5 rows per collection, default 2; detail 1–4096 bytes, default 2048 |
+| `pointer` | `--pointer` | Detail-only JSON pointer; empty selects the whole record/section |
+
+Summary `overview` includes workflows, tasks, unacknowledged events, approval card
+identifiers/states, project aliases and progress. `projects` is now a paginated array
+of aliases (`name`), check counts and revision limits, not full policy objects.
+Use a specific section for more rows. Every returned collection has a `pages` entry
+with `total`, `returned`, `offset`, `next_offset` and ordering. Pages are newest first
+except projects/progress, which use stored order. Overview offset applies independently
+to each collection. The byte budget may reduce the requested page size; always follow
+the returned `next_offset`. A scoped request excludes unrelated agent reports, events,
+approvals and progress (including legacy progress-delivery records that cannot be
+attributed). Counts are captured with the evidence in one SQLite read snapshot.
+Separate calls can observe new state; summary offsets are not a frozen export.
+
+Examples (MCP argument objects):
+
+```json
+{"workflow_id":"WORKFLOW_UUID"}
+{"section":"tasks","offset":2,"limit":5}
+{"mode":"detail","workflow_id":"WORKFLOW_UUID","pointer":"/data/rounds/0"}
+{"mode":"detail","task_id":"TASK_UUID","pointer":"/result","limit":1024}
+{"mode":"detail","section":"events","limit":1024}
+{"mode":"detail","section":"check_output","workflow_id":"WORKFLOW_UUID","pointer":"/data/rounds/0/check_result/results/0","limit":1024}
+```
+
+Detail `overview` requires one workflow/task ID. Other detail sections select the
+whole collection (and support those filters). Detail events include acknowledged
+history; progress-delivery detail includes all legacy rows, without replaying them.
+`pointer` selects a value within that record/collection before chunking. To read an
+earlier candidate, use its index in `/data/rounds/N`; the summary covers only the last
+round. `/request` retrieves immutable requests only when explicitly requested.
+
+Detail returns `chunk`, `total_bytes`, `sha256`, and `next_offset`. Concatenate chunks
+as strings, then parse the resulting JSON. The pointer's selected value is JSON-encoded,
+so a selected string includes JSON quotes/escapes; a chunk need not itself be valid
+JSON. Repeat the same selection with the returned next_offset until null. Verify
+sha256 stays unchanged; if it changes, restart rather than mixing snapshots. This
+hash identifies the encoded value, not a candidate approval. `check_output` reads
+only the selected recorded log beneath that workflow's private managed directory,
+rejects symlink paths/digest changes, and returns its JSON-encoded text (or an
+`encoding: bytes` object with the exact bytes for non-UTF-8 logs). It does not expose
+arbitrary file reads. Use the recorded `output_sha256` for original log bytes.
+
+CLI equivalent:
+
+```sh
+bin/teem --config /absolute/plugin/config.toml status --foreman ses_EXACT_REGISTERED_SESSION \
+  --workflow-id WORKFLOW_UUID --mode detail --pointer /data/rounds/0 --limit 1024
+```
+
+If a client still truncates/spools output to an inaccessible path, **do not read it
+by bypassing permissions, grant blanket external-directory access, infer PASS, or
+acknowledge the event**. Retry the workflow/task's specific section with `limit: 1`,
+or use smaller detail chunks/pointers. Read relevant failures, findings and limitations
+before summarising and acknowledging. If no bounded selection is readable, report
+that blocker and leave the event unacknowledged. An exceptionally large summary that
+cannot fit even one row fails explicitly with narrowing instructions; it does not
+silently remove failures to fit. Native execution success is never review approval.
 
 `starting`, `accepted`, `running`, and `uncertain` retain a slot and exclusive checkout ownership.
 A crash after native submission does not cause another prompt submission.

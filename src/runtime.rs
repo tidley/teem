@@ -140,6 +140,16 @@ pub fn prompt_text(t: &Value) -> String {
     )
 }
 pub fn event_payload(e: &Value) -> Result<Value> {
+    let mut payload = legacy_event_payload(e)?;
+    payload["text"] = json!(format!(
+        "{} Status retrieval: use this workflow_id or task_id; default status is a bounded summary. Read actual check results, both exact-candidate verdicts and unresolved findings/limitations. Follow marked truncations/missing rows with section pagination or mode=detail and JSON pointer, then next_offset chunks. Never claim success or acknowledge unseen evidence from a returned file path. If output is inaccessible, retry a narrower section/smaller limit; otherwise report the blocker without ack. Do not broaden directory permissions. Execution success is not review approval; ready is candidate qualification. Later integration receipts take precedence over historical candidate details; integration does not verify publication or runtime. Only acknowledge after consuming the relevant readable outcome.",
+        text(&payload, "text")
+    ));
+    Ok(payload)
+}
+
+// Exact old payloads remain valid receipts. Never resend or rewrite old inputs.
+fn legacy_event_payload(e: &Value) -> Result<Value> {
     let id = uuid(&text(e, "request_id"))?.simple().to_string();
     let event = text(e, "id");
     if let Some(workflow) = e["workflow_id"].as_str() {
@@ -164,7 +174,8 @@ fn validate_event(e: &Value, m: &Value, queued: bool) -> Result<()> {
         m["id"] == expected["id"]
             && m["type"] == "synthetic"
             && (!queued || m["sessionID"] == e["foreman"])
-            && body["text"] == expected["text"]
+            && (body["text"] == expected["text"]
+                || body["text"] == legacy_event_payload(e)?["text"])
             && body["metadata"] == expected["metadata"],
         "Native completion input mismatch"
     );

@@ -161,7 +161,12 @@ pub fn mcp(s: &Store, f: &str, mut input: impl BufRead, mut output: impl Write) 
                             params.get("arguments").unwrap_or(&json!({})),
                         ) {
                             Ok(data) => {
-                                json!({"content":[{"type":"text","text":serde_json::to_string(&data)?}]})
+                                let rendered = if text(&params, "name") == "foreman_status" {
+                                    serde_json::to_string_pretty(&data)?
+                                } else {
+                                    serde_json::to_string(&data)?
+                                };
+                                json!({"content":[{"type":"text","text":rendered}]})
                             }
                             Err(e) => {
                                 json!({"isError":true,"content":[{"type":"text","text":e.to_string()}]})
@@ -291,6 +296,37 @@ pub fn serve(path: &Path, initial: &Value) -> Result<()> {
     }
     Ok(())
 }
+pub fn status_options(args: &[String]) -> Result<Value> {
+    ensure!(
+        args.chunks_exact(2).remainder().is_empty(),
+        "Status options require values"
+    );
+    let mut result = json!({});
+    for pair in args.chunks_exact(2) {
+        let key = match pair[0].as_str() {
+            "--task-id" => "task_id",
+            "--workflow-id" => "workflow_id",
+            "--mode" => "mode",
+            "--section" => "section",
+            "--offset" => "offset",
+            "--limit" => "limit",
+            "--pointer" => "pointer",
+            _ => bail!("Unknown status option"),
+        };
+        ensure!(result.get(key).is_none(), "Duplicate status option");
+        result[key] = if ["offset", "limit"].contains(&key) {
+            json!(
+                pair[1]
+                    .parse::<u64>()
+                    .context("Use a nonnegative integer")?
+            )
+        } else {
+            json!(pair[1])
+        };
+    }
+    Ok(result)
+}
+
 pub fn main(args: Vec<String>) -> Result<()> {
     let mut config = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")
         .map(PathBuf::from)
@@ -315,7 +351,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "teem [--config PATH] bind|status --foreman ID|mcp --foreman ID|board|open-status|serve|service-start|service-unit\nteem install-plugin\nNo command starts model work without enabled configuration."
+                "teem [--config PATH] bind|status --foreman ID|mcp --foreman ID|board|open-status|serve|service-start|service-unit\nteem install-plugin\nstatus options: [--task-id ID | --workflow-id ID] [--mode summary|detail] [--section overview|workflows|tasks|events|approvals|projects|progress|agent_progress|progress_delivery|check_output] [--offset N] [--limit N] [--pointer JSON_POINTER]\nSummary limit 1..5 rows (default 2); detail limit 1..4096 UTF-8 JSON bytes (default 2048). Use returned next_offset. Status is bounded to 24000 pretty-JSON bytes. check_output requires detail, workflow-id, and pointer /data/rounds/N/check_result/results/M.\nNo command starts model work without enabled configuration."
             );
             return Ok(());
         }
@@ -403,16 +439,17 @@ pub fn main(args: Vec<String>) -> Result<()> {
         "bind" => println!("{}", bind(&s)?),
         "status" | "mcp" => {
             ensure!(
-                rest.len() == 2 && rest[0] == "--foreman",
-                "Select exactly --foreman ID"
+                rest.len() >= 2 && rest[0] == "--foreman",
+                "Select --foreman ID first"
             );
             let f = &rest[1];
             if command == "mcp" {
+                ensure!(rest.len() == 2, "MCP accepts only --foreman ID");
                 mcp(&s, f, std::io::stdin().lock(), std::io::stdout().lock())?;
             } else {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&s.status(f, &json!({}))?)?
+                    serde_json::to_string_pretty(&s.status(f, &status_options(&rest[2..])?)?)?
                 );
             }
         }

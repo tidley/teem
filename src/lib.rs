@@ -6,5 +6,6 @@ pub mod operator;
 pub mod plugin;
 pub mod progress;
 pub mod runtime;
+pub mod status;
 pub mod store;
 pub mod workflows;

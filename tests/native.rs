@@ -157,14 +157,16 @@ fn frozen_legacy_wire_and_digest_contracts_match() {
         f["session_payload"]
     );
     assert_eq!(runtime::prompt_text(t), f["prompt_text"]);
-    assert_eq!(
-        runtime::event_payload(&f["event"]).unwrap(),
-        f["event_payload"]
-    );
-    assert_eq!(
-        runtime::event_payload(&f["workflow_event"]).unwrap(),
-        f["workflow_payload"]
-    );
+    for (event, key) in [
+        ("event", "event_payload"),
+        ("workflow_event", "workflow_payload"),
+    ] {
+        let mut payload = runtime::event_payload(&f[event]).unwrap();
+        assert!(text(&payload, "text").starts_with(&text(&f[key], "text")));
+        assert!(text(&payload, "text").contains("without ack"));
+        payload["text"] = f[key]["text"].clone();
+        assert_eq!(payload, f[key]);
+    }
     assert_eq!(digest(&f["canonical_value"]), f["canonical_digest"]);
 }
 
@@ -1216,6 +1218,32 @@ fn native_inbox_receipt_rejects_wrong_foreman() {
         json!([{"id":payload["id"],"type":"synthetic","sessionID":"ses_wrong","payload":payload}]),
     );
     assert!(r.accepted(event).is_err());
+}
+#[test]
+fn historical_completion_receipts_reconcile_without_replay() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
+    for (event, payload) in [
+        ("event", "event_payload"),
+        ("workflow_event", "workflow_payload"),
+    ] {
+        let e = &fixture[event];
+        let p = &fixture[payload];
+        let prefix = format!("/api/session/{}", text(e, "foreman"));
+        let mut r = Routes {
+            values: BTreeMap::new(),
+        };
+        r.values.insert(
+            format!("{prefix}/inbox"),
+            json!([{"id":p["id"],"type":"synthetic","sessionID":e["foreman"],"payload":p}]),
+        );
+        assert!(r.accepted(e).unwrap());
+        r.values.clear();
+        r.values.insert(
+            format!("{prefix}/message/{}", text(p, "id")),
+            json!({"id":p["id"],"type":"synthetic","text":p["text"],"metadata":p["metadata"]}),
+        );
+        assert!(r.accepted(e).unwrap());
+    }
 }
 #[test]
 fn permission_observation_requires_exact_tool_input_and_worker_identity() {

@@ -1,4 +1,4 @@
-use crate::{checkouts, common::*, progress, workflows};
+use crate::{checkouts, common::*, workflows};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, Params, params};
 use serde_json::{Value, json};
@@ -333,34 +333,7 @@ impl Store {
         Ok(())
     }
     pub fn status(&self, f: &str, filter: &Value) -> Result<Value> {
-        let binding = self.binding(f)?;
-        let mut tasks = self.tasks(Some(f))?;
-        let mut works = self.workflows(f)?;
-        ensure!(
-            filter["task_id"].is_null() || filter["workflow_id"].is_null(),
-            "Select task or workflow, not both"
-        );
-        if let Some(id) = filter["workflow_id"].as_str() {
-            let w = self.workflow(id)?;
-            ensure!(
-                w["foreman"] == f,
-                "Workflow does not belong to this Foreman"
-            );
-            works = vec![w];
-            tasks.retain(|t| t["request"]["workflow_id"] == id);
-        }
-        if let Some(id) = filter["task_id"].as_str() {
-            let t = self.task(id)?;
-            ensure!(t["foreman"] == f, "Task does not belong to this Foreman");
-            tasks = vec![t];
-        }
-        let mut approvals=self.query("SELECT task_id,permission_id,form_id,state,detail FROM approvals WHERE foreman=? ORDER BY rowid",[f])?;
-        if let Some(id) = filter["task_id"].as_str() {
-            approvals.retain(|a| a["task_id"] == id);
-        }
-        Ok(
-            json!({"foreman":f,"terminal_id":binding["terminal_id"],"limits":{"worker":2,"reviewer":2},"limit_scope":"per managed task; legacy tasks share two slots per role","completion_transport":"native-runtime","tasks":tasks.into_iter().rev().take(100).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>(),"events":self.query("SELECT * FROM events WHERE foreman=? AND acked=0 ORDER BY rowid",[f])?,"workflows":works.into_iter().rev().take(100).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>(),"projects":self.projects,"agent_progress":self.query("SELECT agent_todos.* FROM agent_todos JOIN tasks ON tasks.id=agent_todos.task_id WHERE tasks.foreman=?",[f])?,"approvals":approvals,"progress":progress::snapshot(self,f)?,"progress_delivery":self.query("SELECT seq,state,detail FROM progress_events WHERE foreman=? ORDER BY seq DESC LIMIT 1",[f])?}),
-        )
+        crate::status::read(self, f, filter)
     }
     pub fn save_workflow(&self, w: &mut Value, state: &str, detail: &str) -> Result<()> {
         w["state"] = json!(state);

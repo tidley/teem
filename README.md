@@ -27,6 +27,7 @@ No paid worker run is part of repository setup.
 - `src/plugin.rs`: [Herdr](https://github.com/herdrdev/herdr) commands, fixed-binding [MCP](https://github.com/modelcontextprotocol/modelcontextprotocol) tools, and service unit output.
 - `src/operator.rs`: explicit candidate integration, verified commit receipts and bounded Foreman color updates.
 - `src/store.rs`: [SQLite](https://sqlite.org/src/) tasks, per-task 2+2 limits, and exclusive checkout ownership.
+- `src/status.rs`: bounded readable status, authoritative counts and paginated evidence retrieval.
 - `src/runtime.rs`: loopback-only [OpenCode](https://github.com/anomalyco/opencode) HTTP, completion admission and permission rules.
 - `src/progress.rs`: plans, atomic private progress snapshots and native todo observations.
 - `ui/teem-progress`: passive [OpenCode](https://github.com/anomalyco/opencode) TUI checklist; retains native todos for other conversations.
@@ -93,6 +94,12 @@ without waking Foreman. It shows current work; completed results remain in statu
 Individual agent completion receipts do not trigger model turns. One final workflow
 outcome asks Foreman for a concise result summary. The sidebar retains the latest
 result separately from active todos, so completion cannot look like cancellation.
+`foreman_status` defaults to a bounded summary, not full prompts/history. It reports
+worker/reviewer state counts, candidate check/review evidence and later integration
+receipts. Explicit detail chunks retain access to full history and verified check
+output without granting access to an external tool-output directory. See
+[status modes and recovery](docs/HERDR_PLUGIN.md#bounded-status-and-evidence-retrieval).
+Never acknowledge an outcome whose relevant evidence is inaccessible or unread.
 Managed workflows provide project-approved checks and bounded review/revision loops.
 Their `ready` state qualifies the exact candidate under its recorded policy, not an
 integrated project or release. Untrusted check scripts require stronger isolation
