@@ -1,8 +1,8 @@
 # Teem
 
 A local Herdr plugin with one visible Foreman and up to two workers plus two reviewers per managed task.
-The supervisor is a native Rust executable, not another agent. Python is not
-required at runtime. The OpenCode TUI adapter uses the host's TypeScript interface.
+The supervisor is a native Rust executable, not another agent.
+The OpenCode TUI adapter uses the host's TypeScript interface.
 
 ```text
 Herdr ↔ Foreman ↔ Teem supervisor ↔ Workers/reviewers
@@ -10,14 +10,14 @@ Herdr ↔ Foreman ↔ Teem supervisor ↔ Workers/reviewers
      Codr/White Noise — optional
 ```
 
-Teem and Codr/White Noise are independent, optional integrations.
-Teem does not import, call, configure, start, or restart Codr.
+Teem and [Codr](https://github.com/tidley/codr)/White Noise are independent, optional integrations.
+Teem does not import, call, configure, start, or restart [Codr](https://github.com/tidley/codr).
 Without Teem, an ordinary agent conversation works as before.
 With Teem, an explicitly bound Foreman can delegate and receive native completion events.
 
 ## Status
 
-Early local-first MVP, developed independently from Codr.
+Early local-first MVP, developed independently from [Codr](https://github.com/tidley/codr).
 Source: [github.com/tidley/teem](https://github.com/tidley/teem).
 No paid worker run is part of repository setup.
 
@@ -45,7 +45,7 @@ herdr plugin install tidley/teem
 ```
 
 The manifest builds and installs `bin/teem` with Cargo. Rust 1.85+ and a native C
-toolchain are needed at installation; Rust, Python and Cargo are not needed by
+toolchain are needed at installation; Rust and Cargo are not needed by
 the resulting executable. Git, Linux/systemd, Herdr and OpenCode remain required.
 For a local checkout run `cargo run --locked --release -- install-plugin` before
 `herdr plugin link /absolute/path/to/teem`. See the plugin guide for explicit setup.
@@ -66,7 +66,7 @@ bun test ui/teem-progress/progress.test.mjs
 ```
 
 Tests use temporary repositories and fake/local transports, not live models or
-credentials. Neither the runtime nor the tests require a Python interpreter.
+credentials.
 
 ## Setup and limits
 
