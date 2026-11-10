@@ -26,6 +26,7 @@ No paid worker run is part of repository setup.
 - `herdr-plugin.toml`: Teem actions, startup hook, and transient status popup.
 - `src/plugin.rs`: [Herdr](https://github.com/herdrdev/herdr) commands, fixed-binding [MCP](https://github.com/modelcontextprotocol/modelcontextprotocol) tools, and service unit output.
 - `src/operator.rs`: explicit candidate integration, verified commit receipts and bounded Foreman color updates.
+- `src/control.rs`: durable user stop requests, native interruption and preserved handoff state.
 - `src/store.rs`: [SQLite](https://sqlite.org/src/) tasks, per-task 2+2 limits, and exclusive checkout ownership.
 - `src/status.rs`: bounded readable status, authoritative counts and paginated evidence retrieval.
 - `src/runtime.rs`: loopback-only [OpenCode](https://github.com/anomalyco/opencode) HTTP, completion admission and permission rules.
@@ -84,6 +85,10 @@ commits or publishes. Shared status and the sidebar show integration receipts.
 The Foreman profile permits routine local edits, asks before shell commands and
 integration, and protects its own permissions/MCP configuration. `foreman_color`
 changes only its local accent without needing shell access.
+The Foreman assigns a separate workflow and at least one dedicated worker to
+each distinct task or issue; independent tasks may run in parallel. After user
+approval, `foreman_stop` pauses a workflow and stops its selected native agents
+without discarding their changes or automatically launching replacements.
 Code permissions are not an operating-system sandbox. Existing phone admission and desktop draft races remain unqualified.
 The pilot Foreman uses a project-local runtime profile. This does not impose that profile on other conversations.
 Completion admission is not Foreman consumption. Uncertain delivery is reconciled by exact native message ID, never automatic resend.

@@ -165,6 +165,7 @@ impl Store {
         for k in ["request", "policy", "data"] {
             v[k] = serde_json::from_str(v[k].as_str().context("Invalid stored workflow")?)?;
         }
+        v["stop"] = crate::control::snapshot(self, id)?;
         v["integration"] = crate::operator::receipt(self, id)?;
         if !v["integration"].is_null() {
             v["candidate_detail"] = v["detail"].clone();
@@ -262,7 +263,8 @@ impl Store {
         let revision = text(&req, "revision");
         ensure!(oid(&revision), "Use full immutable Git commit ID");
         self.transaction(||{if let Some(old)=self.query("SELECT * FROM tasks WHERE id=?",[&id])?.into_iter().next(){let task=Self::decode_task(old)?;ensure!(task["request"]==req,"Task UUID belongs to a different immutable request");return Ok(task)}
-            let sparse=checkouts::task_checkout(&json!({"checkout":path,"role":role,"request":req}))?;
+             if let Some(w)=req["workflow_id"].as_str(){ensure!(!crate::control::paused(self,w)?,"Workflow is paused by a user stop; do not replace its agents");}
+             let sparse=checkouts::task_checkout(&json!({"checkout":path,"role":role,"request":req}))?;
             self.exec("INSERT INTO tasks(id,foreman,role,checkout,state,request,session_id,prompt_id,sparse,created) VALUES (?,?,?,?,'queued',?,?,?,?,?)",params![id,f,role,path,canonical(&req),format!("ses_foreman_{}",uid.simple()),format!("msg_foreman_{}",uid.simple()),sparse,now()])?;self.task(&id)})
     }
     pub fn claim(&self) -> Result<Option<Value>> {
@@ -273,6 +275,11 @@ impl Store {
                 .filter(|t| LIVE.contains(&text(t, "state").as_str()))
                 .collect::<Vec<_>>();
             for mut t in tasks.clone() {
+                if let Some(w) = t["request"]["workflow_id"].as_str() {
+                    if crate::control::paused(self, w)? {
+                        continue;
+                    }
+                }
                 if t["state"] != "queued"
                     || live
                         .iter()
@@ -341,7 +348,7 @@ impl Store {
         if FINAL.contains(&state) && w["data"]["finished_at"].is_null() {
             w["data"]["finished_at"] = json!(now());
         }
-        self.transaction(||{self.exec("UPDATE workflows SET state=?,detail=?,round=?,base_revision=?,data=? WHERE id=?",params![state,detail,w["round"].as_i64().unwrap_or(0),w["base_revision"].as_str(),canonical(&w["data"]),text(w,"id")])?;if FINAL.contains(&state){self.exec("INSERT OR IGNORE INTO events(id,task_id,foreman,request_id,transport,refresh_todos,workflow_id) VALUES (?,?,?,?,'native',0,?)",params![uuid::Uuid::new_v4().to_string(),format!("workflow:{}",text(w,"id")),text(w,"foreman"),uuid::Uuid::new_v4().to_string(),text(w,"id")])?;}Ok(())})
+        self.transaction(||{ensure!(!crate::control::paused(self,&text(w,"id"))?,"Workflow is paused by a user stop; preserve work without progression");self.exec("UPDATE workflows SET state=?,detail=?,round=?,base_revision=?,data=? WHERE id=?",params![state,detail,w["round"].as_i64().unwrap_or(0),w["base_revision"].as_str(),canonical(&w["data"]),text(w,"id")])?;if FINAL.contains(&state){self.exec("INSERT OR IGNORE INTO events(id,task_id,foreman,request_id,transport,refresh_todos,workflow_id) VALUES (?,?,?,?,'native',0,?)",params![uuid::Uuid::new_v4().to_string(),format!("workflow:{}",text(w,"id")),text(w,"foreman"),uuid::Uuid::new_v4().to_string(),text(w,"id")])?;}Ok(())})
     }
     pub fn workflow_submit(&self, f: &str, args: Value) -> Result<Value> {
         workflows::submit(self, f, args)

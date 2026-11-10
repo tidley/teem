@@ -20,6 +20,8 @@ const SECTIONS: &[&str] = &[
     "agent_progress",
     "progress_delivery",
     "check_output",
+    "stopped_changes",
+    "changes",
 ];
 
 // Bound bytes, not characters, including a visible indication of lost detail.
@@ -124,6 +126,20 @@ fn workflow_summary(w: &Value, tasks: &[Value]) -> Value {
         ],
     );
     out["title"] = clip(&json!({"title":progress::title(w)}), "title", 120);
+    if !w["stop"].is_null() {
+        let mut stop = fields(&w["stop"], &["state", "requested_at", "workflow_paused"]);
+        let targets = array(&w["stop"]["targets"]);
+        stop["targets_total"] = json!(targets.len());
+        stop["targets"] = json!(
+            targets
+                .iter()
+                .take(4)
+                .map(|t| fields(t, &["task_id", "state", "detail"]))
+                .collect::<Vec<_>>()
+        );
+        stop["targets_truncated"] = json!(targets.len() > 4);
+        out["stop"] = stop;
+    }
     let related = tasks
         .iter()
         .filter(|t| t["request"]["workflow_id"] == w["id"])
@@ -267,8 +283,8 @@ pub fn read(s: &Store, f: &str, args: &Value) -> Result<Value> {
     let section = option(args, "section", "overview")?;
     ensure!(SECTIONS.contains(&section), "Unknown status section");
     ensure!(
-        section != "check_output" || mode == "detail",
-        "check_output requires detail mode"
+        !["check_output", "stopped_changes"].contains(&section) || mode == "detail",
+        "check_output and stopped_changes require detail mode"
     );
     let task_id = option(args, "task_id", "")?;
     let workflow_id = option(args, "workflow_id", "")?;
@@ -277,6 +293,15 @@ pub fn read(s: &Store, f: &str, args: &Value) -> Result<Value> {
         "Select task or workflow, not both"
     );
     let pointer = option(args, "pointer", "")?;
+    let file = option(args, "file", "")?;
+    ensure!(
+        file.is_empty() || (["changes", "stopped_changes"].contains(&section) && mode == "detail"),
+        "file requires changes detail mode"
+    );
+    ensure!(
+        section != "changes" || !task_id.is_empty(),
+        "changes requires one exact worker task_id"
+    );
     ensure!(
         mode == "detail" || pointer.is_empty(),
         "pointer requires detail mode"
@@ -389,7 +414,19 @@ pub fn read(s: &Store, f: &str, args: &Value) -> Result<Value> {
                     );
                     works[0].clone()
                 }
+                "stopped_changes" => {
+                    ensure!(!task_id.is_empty(), "stopped_changes requires one task_id");
+                    let task = &tasks[0];
+                    let rows =
+                        s.query("SELECT state FROM task_stops WHERE task_id=?", [task_id])?;
+                    ensure!(
+                        rows.first().is_some_and(|r| r["state"] == "stopped"),
+                        "Confirm the selected task stopped before reading its handoff"
+                    );
+                    crate::inspection::changes(s, task, file)?
+                }
                 "tasks" => json!(tasks),
+                "changes" => crate::inspection::changes(s, &tasks[0], file)?,
                 "workflows" => json!(works),
                 "events" => json!(events),
                 "approvals" => json!(approvals),
@@ -491,6 +528,7 @@ pub fn read(s: &Store, f: &str, args: &Value) -> Result<Value> {
                         .map(|w| workflow_summary(w, &all_tasks))
                         .collect(),
                     "tasks" => tasks.iter().rev().map(task_summary).collect(),
+                    "changes" => array(&crate::inspection::changes(s,&tasks[0],"")?["files"]),
                     "events" => events
                         .iter()
                         .rev()

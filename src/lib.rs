@@ -2,6 +2,8 @@ pub mod approvals;
 pub mod checkouts;
 pub mod checks;
 pub mod common;
+pub mod control;
+pub mod inspection;
 pub mod operator;
 pub mod plugin;
 pub mod progress;

@@ -183,6 +183,33 @@ fn validate_event(e: &Value, m: &Value, queued: bool) -> Result<()> {
 }
 pub trait Runtime {
     fn request(&self, method: &str, path: &str, payload: Option<&Value>) -> Result<Value>;
+    fn is_stopped(&self, t: &Value) -> Result<bool> {
+        let prefix = format!("/api/session/{}", text(t, "session_id"));
+        let session = self.request("GET", &prefix, None)?;
+        validate_session(t, &session, &self.default_model())?;
+        let active = self.request("GET", "/api/session/active", None)?;
+        ensure!(active.is_object(), "Invalid native activity response");
+        let inbox = self.request("GET", &format!("{prefix}/inbox"), None)?;
+        let inbox = inbox.as_array().context("Invalid native inbox")?;
+        if active.get(text(t, "session_id")).is_some() || !inbox.is_empty() {
+            return Ok(false);
+        }
+        // A queued input may have been consumed between the first two reads.
+        let active = self.request("GET", "/api/session/active", None)?;
+        ensure!(active.is_object(), "Invalid native activity response");
+        Ok(active.get(text(t, "session_id")).is_none())
+    }
+    fn interrupt(&self, t: &Value) -> Result<()> {
+        let prefix = format!("/api/session/{}", text(t, "session_id"));
+        let session = self.request("GET", &prefix, None)?;
+        validate_session(t, &session, &self.default_model())?;
+        let result = self.request("POST", &format!("{prefix}/interrupt"), None)?;
+        ensure!(
+            result["interrupted"].is_boolean(),
+            "Native interrupt admission is unconfirmed"
+        );
+        Ok(())
+    }
     fn default_model(&self) -> Value {
         Value::Null
     }
@@ -473,6 +500,13 @@ impl Runtime for OpenCode {
         ensure!(bytes.len() <= 1048576, "OpenCode response too large");
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|_| anyhow::anyhow!("Invalid OpenCode response"))?;
+        if method == "POST" && path.ends_with("/interrupt") {
+            ensure!(
+                value["interrupted"].is_boolean(),
+                "Invalid native interrupt response"
+            );
+            return Ok(value);
+        }
         Ok(value
             .get("data")
             .context("Invalid OpenCode response envelope")?
@@ -521,7 +555,32 @@ pub fn tick(store: &Store, runtime: &dyn Runtime) -> Result<()> {
         }
         let result = (|| -> Result<()> {
             let task = store.record_model(&text(&t, "id"), &runtime.dispatch_model(&t)?)?;
+            if let Some(w) = task["request"]["workflow_id"].as_str() {
+                if crate::control::paused(store, w)? {
+                    store.update(
+                        &text(&t, "id"),
+                        "interrupted",
+                        "",
+                        "Stopped before native session creation",
+                    )?;
+                    return Ok(());
+                }
+            }
             runtime.create(&task)?;
+            // Hold admission serialization through HTTP, without rolling back
+            // the durable starting reservation on an unknown response.
+            let _guard = crate::control::admission_guard(store)?;
+            if let Some(w) = task["request"]["workflow_id"].as_str() {
+                if crate::control::paused(store, w)? {
+                    store.update(
+                        &text(&t, "id"),
+                        "interrupted",
+                        "",
+                        "Stopped before native input admission; native session retained",
+                    )?;
+                    return Ok(());
+                }
+            }
             runtime.prompt(&task)?;
             Ok(())
         })();

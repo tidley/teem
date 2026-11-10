@@ -917,6 +917,18 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
         "Do not cut off the Foreman before it can finish research and dispatch"
     );
     assert!(profile["agents"]["teem_foreman"].get("maxSteps").is_none());
+    let instruction = text(&profile["agents"]["teem_foreman"], "system");
+    for rule in [
+        "Each distinct user task or issue gets its own workflow",
+        "at least one dedicated implementation worker",
+        "Do not bundle separate tasks or issues into a catch-all workflow",
+        "explicit stop/handoff approval",
+    ] {
+        assert!(
+            instruction.contains(rule),
+            "Missing task ownership rule: {rule}"
+        );
+    }
     let permissions = array(&profile["agents"]["teem_foreman"]["permissions"]);
     assert_eq!(
         permissions[0],
@@ -930,6 +942,7 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
         ("shell", "ask"),
         ("edit", "allow"),
         ("teem_foreman_integrate", "ask"),
+        ("teem_foreman_stop", "ask"),
         ("teem_foreman_color", "allow"),
     ] {
         assert!(

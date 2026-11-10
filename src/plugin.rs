@@ -101,6 +101,7 @@ pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
         "foreman_workflow" => s.workflow_submit(f, args.clone()),
         "foreman_integrate" => crate::operator::integrate(s, f, args),
         "foreman_color" => crate::operator::color(s, f, args),
+        "foreman_stop" => crate::control::request(s, f, args),
         "foreman_ack" => {
             s.ack(f, args["event_id"].as_str().context("Invalid event ID")?)?;
             Ok(json!({"acknowledged":true}))
@@ -277,6 +278,7 @@ pub fn serve(path: &Path, initial: &Value) -> Result<()> {
                 })
                 .collect::<Result<_>>()?;
             let runtime = OpenCode::new(&expand(&text(&c, "registry")), &text(&c, "model"))?;
+            crate::control::tick(&s, &runtime)?;
             workflows::tick(&s, &runtime, &mut runner)?;
             runtime::tick(&s, &runtime)?;
             approvals::deliver(&s, &runtime)?;
@@ -311,6 +313,7 @@ pub fn status_options(args: &[String]) -> Result<Value> {
             "--offset" => "offset",
             "--limit" => "limit",
             "--pointer" => "pointer",
+            "--file" => "file",
             _ => bail!("Unknown status option"),
         };
         ensure!(result.get(key).is_none(), "Duplicate status option");
