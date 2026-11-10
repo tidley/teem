@@ -101,7 +101,7 @@ The MCP tools appear with their own schemas and descriptions. They do not depend
 - `foreman_status`: bounded task/workflow summaries, exact native session IDs, authoritative counts, check/review outcomes, unacknowledged events, and explicit paginated detail retrieval. See [status modes](#bounded-status-and-evidence-retrieval).
 - `foreman_ack`: acknowledge one event after consuming its result. This does not approve code.
 - `foreman_plan`: define this conversation's ordered checklist, linking execution items to retained task UUIDs.
-- `foreman_workflow`: supply a configured project alias, retained workflow UUID, scope and acceptance criteria. No checkout paths or base hashes are needed.
+- `foreman_workflow`: supply an explicit authorised GitHub `issue`, configured project alias, retained workflow UUID, scope and acceptance criteria. No checkout paths or base hashes are needed.
 - `foreman_integrate`: after approval, apply a ready exact candidate to its original clean source. Supply a full `commit` instead to verify and record an already integrated exact-candidate commit.
 - `foreman_color`: set this bound Foreman's local accent using `project` and a six-digit hex `color`. No shell or restart is needed.
 - `foreman_stop`: after approval, durably pause a workflow and request interruption of its active native agents. An optional exact `task_id` selects one agent; the workflow still pauses, while already-running siblings are not interrupted.
@@ -109,7 +109,7 @@ The MCP tools appear with their own schemas and descriptions. They do not depend
 ### Compact dispatch inputs
 
 Prefer nested `assignment` for new `foreman_workflow` calls: keep `workflow_id`,
-`project` and an optional short `title` at top level; put `scope`, the full `prompt`
+`project`, `issue` and an optional short `title` at top level; put `scope`, the full `prompt`
 and optional `workers` inside `assignment`. For `foreman_submit`, keep `task_id`
 and `role` at top level and nest `checkout`, `revision`, `scope` and `prompt`.
 Never mix nested and top-level assignment fields, even with equal values.
@@ -207,6 +207,47 @@ Background sessions deny MCP tools and delegation through their runtime permissi
 
 ## Managed workflows and routine checks
 
+### Explicit issue tracking
+
+Every **new** managed workflow requires a structured top-level `issue` string,
+for example `"issue":"tidley/teem#8"`. Both compact `assignment` and legacy
+top-level assignment forms use this same field and admission gate. Use an
+explicit user-authorised association; titles and prompts never establish ownership.
+The syntax is GitHub `owner/repo#positive-number`: ASCII owner/repository names,
+owner up to 39 bytes, repository up to 100, positive unsigned 64-bit issue number.
+Owner/repository case and leading number zeroes normalize to one lowercase reference.
+URLs, bare `#8`, zero, negative/fractional numbers and extra path segments reject
+with a corrective example. This validates syntax only, not GitHub existence or
+user authority. It makes no network calls, needs no credentials and never publishes
+issues. Having an issue never authorises paid work, expanded scope or deployment.
+
+The canonical association is part of the immutable request. Retain the UUID and
+same inputs on retries; changing the issue or scope under that UUID rejects.
+Workers, reviewers and corrective rounds inherit it. `foreman_reconcile` inherits
+the issue, scope and acceptance criteria and rejects an issue switch. An eligible
+unlinked historical source needs an explicit `issue` on its **new** continuation;
+retain that field on retries. Its parent request, native sessions and evidence
+remain unchanged. Existing candidate, stop, activity, budget and qualification
+gates still apply; this is not recovery permission or a legacy bypass.
+
+Pre-upgrade unlinked workflows keep progressing and exact immutable retries remain
+usable without backfilling an issue. Historical records are not rewritten or replayed.
+The schema leaves `issue` optional solely to admit those old exact retries; a new
+UUID without it rejects at admission. The legacy fixed-checkout `foreman_submit`
+API, native todos and unrelated manual plans remain compatible, not a new alternative
+for avoiding managed checks. Foreman guidance requires authorised issues for new
+delegated tasks; use managed workflows for their checks and independent reviews.
+
+Verified associations prefix the workflow heading, all generated worker/check/review
+and agent-reported todo details, and manual plan items linked to those managed tasks.
+Already-prefixed labels are not doubled. Compact sidebar groups keep short stage
+labels with the same issue prefix, rather than repeating full workflow titles.
+Unlinked/native/manual text is not interpreted as an association. Agent reports
+remain claims, not qualification evidence. Bounded status, approval and native task
+IDs are unchanged. These are source contracts, not proof of installed/live UI behavior;
+the fixed local transport and adapter tests need supervisor execution. Independent
+table/user-input reporting belongs to issue #7 and is not implemented here.
+
 ### Continuing authorised work
 
 The Foreman can continue routine implementation and bounded corrections within an
@@ -299,7 +340,7 @@ cache mappings or relocate existing build directories. Check logs/receipts are p
 persistent evidence, not regenerable build caches. Test exit zero is check evidence,
 not a guarantee of coverage or correctness.
 
-For an authorised task, Foreman calls `foreman_workflow` with project alias, scope and
+For an authorised task, Foreman calls `foreman_workflow` with issue reference, project alias, scope and
 acceptance criteria, then remains available for chat. The exact native Foreman project
 must match the configured source. The supervisor chooses clean source HEAD and creates
 separate private local clones beneath its state directory. It copies local root

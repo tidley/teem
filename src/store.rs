@@ -247,6 +247,15 @@ impl Store {
                     .is_some_and(|r| r["workflow_id"] == req["workflow_id"]),
                 "Managed checkout ownership mismatch"
             );
+            let workflow =
+                self.workflow(req["workflow_id"].as_str().context("Invalid workflow ID")?)?;
+            if let Some(issue) = workflow["request"].get("issue") {
+                ensure!(
+                    req.get("issue").is_none_or(|value| value == issue),
+                    "Managed task cannot switch its inherited issue"
+                );
+                req["issue"] = issue.clone();
+            }
         }
         if req.get("native_todos").is_some() {
             ensure!(

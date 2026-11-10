@@ -420,7 +420,7 @@ fn workflow_fixture_revisions(
         directory: p.to_str().unwrap().into(),
         ..Default::default()
     };
-    let mut req = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"project":"project","scope":["src"],"prompt":"Implement a scoped change","title":"A readable task"});
+    let mut req = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"issue":"tidley/teem#8","project":"project","scope":["src"],"prompt":"Implement a scoped change","title":"A readable task"});
     if two {
         req["workers"] = json!([{"scope":["src/a"],"prompt":"First part"},{"scope":["src/b"],"prompt":"Second part"}]);
     }
@@ -512,6 +512,96 @@ fn revision_budget_change_does_not_revoke_qualified_integration() {
 }
 
 #[test]
+fn issue8_unlinked_legacy_progress_remains_usable_without_backfill() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    let id = text(&w, "id");
+    // Historical records are inserted/adjusted only in this temporary fixture.
+    let mut request = w["request"].clone();
+    request.as_object_mut().unwrap().remove("issue");
+    s.exec(
+        "UPDATE workflows SET request=? WHERE id=?",
+        rusqlite::params![canonical(&request), id],
+    )
+    .unwrap();
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["state"], "working");
+    assert!(s.tasks(None).unwrap()[0]["request"].get("issue").is_none());
+    assert!(
+        progress::snapshot(&s, "ses_test").unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row.get("issue").is_none())
+    );
+    assert_eq!(s.workflow(&id).unwrap()["request"], request);
+}
+
+#[test]
+fn issue8_legacy_continuation_needs_explicit_issue_and_cannot_switch_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let parent_id = text(&w, "id");
+    let mut request = w["request"].clone();
+    request.as_object_mut().unwrap().remove("issue");
+    s.exec(
+        "UPDATE workflows SET request=? WHERE id=?",
+        rusqlite::params![canonical(&request), parent_id],
+    )
+    .unwrap();
+    let before = s
+        .query("SELECT * FROM workflows WHERE id=?", [&parent_id])
+        .unwrap();
+    let mut args =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":parent_id});
+    assert!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args)
+            .unwrap_err()
+            .to_string()
+            .contains("owner/repo#positive-number")
+    );
+    assert!(s.workflow(args["workflow_id"].as_str().unwrap()).is_err());
+    args["issue"] = json!("Tidley/Teem#8");
+    let follow = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(follow["request"]["issue"], "tidley/teem#8");
+    assert_eq!(follow["request"]["scope"], request["scope"]);
+    assert_eq!(follow["request"]["prompt"], request["prompt"]);
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap(),
+        follow
+    );
+    assert_eq!(
+        s.query("SELECT * FROM workflows WHERE id=?", [&parent_id])
+            .unwrap(),
+        before
+    );
+    args["issue"] = json!("tidley/teem#9");
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    args["source_workflow_id"] = follow["id"].clone();
+    // A terminal linked source must reject an explicit issue switch as well.
+    s.exec(
+        "UPDATE workflows SET state='ready',base_revision=?,data=? WHERE id=?",
+        rusqlite::params![
+            text(&w, "base_revision"),
+            canonical(&w["data"]),
+            text(&follow, "id")
+        ],
+    )
+    .unwrap();
+    args["workflow_id"] = json!(uuid::Uuid::new_v4().to_string());
+    assert!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot switch")
+    );
+    args["issue"] = json!("tidley/teem#8");
+    args["scope"] = json!(["outside"]);
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+}
+
+#[test]
 fn reconciliation_preserves_parent_and_requalifies_on_current_source() {
     let tmp = tempfile::tempdir().unwrap();
     let (mut s, w) = ready_operator_fixture(tmp.path());
@@ -527,6 +617,7 @@ fn reconciliation_preserves_parent_and_requalifies_on_current_source() {
     let id = uuid::Uuid::new_v4().to_string();
     let args = json!({"workflow_id":id,"source_workflow_id":w["id"]});
     let follow = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(follow["request"]["issue"], w["request"]["issue"]);
     assert_eq!(follow["state"], "queued");
     assert_eq!(follow["policy"]["max_revisions"], 3);
     assert_eq!(
@@ -2446,6 +2537,9 @@ fn nonpassing_reviewer_forces_a_bounded_revision_with_new_ids() {
     assert_eq!(w["state"], "working", "{w}");
     assert_eq!(w["round"], 1);
     assert_eq!(w["data"]["rounds"].as_array().unwrap().len(), 2);
+    for task in s.tasks(None).unwrap() {
+        assert_eq!(task["request"]["issue"], w["request"]["issue"]);
+    }
     assert_ne!(
         w["data"]["rounds"][0]["worker_id"],
         w["data"]["rounds"][1]["worker_id"]

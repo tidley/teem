@@ -52,6 +52,7 @@ impl Fixture {
     fn workflow(&self) -> Value {
         json!({
             "workflow_id":uuid::Uuid::new_v4().to_string(),
+            "issue":"tidley/teem#8",
             "project":"pilot", "title":"Compact dispatch",
             "assignment":{"scope":["a","b"],"prompt":long_prompt()}
         })

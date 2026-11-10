@@ -19,6 +19,59 @@ const selectedItems = (items, extra = {}) => selectProgress(parseProjection({ ..
   sessions: { ses_foreman: { todos: items.map(({ content, status }) => ({ content, status })), items, ...extra } },
 }), 'ses_foreman', 101)
 
+test('verified issue prefixes heading and all compact child kinds once without expanding groups', () => {
+  const issue = 'tidley/teem#8'
+  const h = { ...heading(), issue }
+  h.label = `${issue} ${h.label}`
+  h.content = `${issue} ${h.content}`
+  const items = [h,
+    row(h, 'worker', 'Implementation', 'in_progress', 'running', 'implementation'),
+    row(h, 'check', 'tests', 'completed', 'passed (exit 0)', 'check'),
+    row(h, 'correctness', 'Review · correctness', 'pending', 'not started', 'review'),
+    row(h, 'scope', 'Review · tests/scope', 'in_progress', 'running', 'review'),
+    row(h, 'claim', `${issue} Inspect changes`, 'in_progress', 'agent-reported progress only', 'reported', { source: 'agent-reported' }),
+    row(h, 'unknown', 'Unknown stage', 'pending', 'not started', undefined),
+  ]
+  const before = structuredClone(items)
+  const selected = selectedItems(items)
+  expect(selected.groups).toHaveLength(1)
+  const group = selected.groups[0]
+  expect(group.title).toBe(`${issue} Compact sidebar`)
+  expect(group.rows).toHaveLength(6)
+  for (const content of [group.title, ...group.rows.map(r => r.content)]) {
+    expect(content.startsWith(issue + ' ')).toBe(true)
+    expect(content.split(issue)).toHaveLength(2)
+  }
+  expect(group.rows[1].content).toBe(`${issue} Tests · passed`)
+  expect(group.rows[4].content).toBe(`${issue} Reported: Inspect changes`)
+  expect(items).toEqual(before)
+})
+
+test('issue-looking native/manual titles and invalid associations are never inferred', () => {
+  const text = 'tidley/teem#8 User text'
+  const h = heading('unknown', text)
+  const legacy = selectedItems([h, row(h, 'check', 'tests', 'pending', 'not run yet', 'check')])
+  expect(legacy.groups[0].rows[0].content).toBe('Tests · pending')
+  for (const issue of ['#8', 'tidley/teem#0', 'tidley/teem#18446744073709551616', 'tidley/..#8', null]) {
+    const selected = selectedItems([{ ...h, issue }, row(h, 'check', 'tests', 'pending', 'not run yet', 'check')])
+    expect(selected.groups[0].rows[0].content).toBe('Tests · pending')
+  }
+  const manual = { content: text, status: 'pending' }
+  expect(selectedItems([manual]).groups[0].rows[0]).toEqual(manual)
+  expect(nativeTodos([{ type: 'assistant', content: [{ type: 'tool', name: 'todowrite',
+    state: { status: 'completed', input: { todos: [manual] } } }] }])).toEqual([manual])
+})
+
+test('long canonical references remain complete while compact stage labels stay short', () => {
+  const issue = `${'a'.repeat(39)}/${'b'.repeat(100)}#18446744073709551615`
+  const h = { ...heading('long', '🦀'.repeat(100)), issue }
+  h.label = `${issue} ${h.label}`
+  h.content = `${issue} ${h.content}`
+  const selected = selectedItems([h, row(h, 'check', 'tests', 'pending', 'not run yet', 'check')])
+  expect(selected.groups[0].title.startsWith(issue + ' ')).toBe(true)
+  expect(selected.groups[0].rows[0].content).toBe(`${issue} Tests · pending`)
+})
+
 test('compact rows show a workflow title/project once and short check/review labels', () => {
   const h = heading()
   const items = [h,

@@ -6,6 +6,15 @@ const short = (text, limit) => {
   return chars.length > limit ? chars.slice(0, limit - 1).join('') + '…' : chars.join('')
 }
 const bounded = (value, limit = 2000) => typeof value === 'string' && value.length > 0 && value.length <= limit
+// Only the supervisor's structured association is used, never title/prompt text.
+const issueReference = value => typeof value === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9._-]{1,100}#[1-9][0-9]{0,19}$/.test(value) &&
+  !value.split('/')[0].includes('--') && !['.', '..'].includes(value.split('/')[1].split('#')[0]) &&
+  BigInt(value.split('#')[1]) <= 18446744073709551615n ? value : undefined
+const withoutIssue = (issue, text) => {
+  while (issue && text.startsWith(issue + ' ')) text = text.slice(issue.length + 1)
+  return text === issue ? '' : text
+}
+const withIssue = (issue, text) => issue ? `${issue} ${withoutIssue(issue, text)}` : text
 const workflowStates = new Map(Object.entries({ queued: 'queued', preparing: 'preparing', working: 'implementation',
   snapshotting: 'snapshotting', checking: 'check batch', review_preparing: 'preparing reviews',
   reviewing: 'reviews', uncertain: 'blocked: uncertain' }))
@@ -34,8 +43,9 @@ export function sidebarGroups(progress) {
     if (!id || !bounded(item.workflow_state, 80) || !bounded(item.label) || workflows.has(id)) continue
     const meta = item.sidebar
     const title = bounded(meta?.title) ? meta.title : item.label
+    const issue = issueReference(item.issue)
     const project = bounded(meta?.project, 300) && title !== meta.project && !title.startsWith(meta.project + ' · ') ? meta.project : ''
-    workflows.set(id, { id, title: short(title, 32), project, prefix: item.label + ' · ',
+    workflows.set(id, { id, title: withIssue(issue, short(withoutIssue(issue, title), 32)), issue, project, prefix: item.label + ' · ',
       heading: item, rows: [] })
   }
   // Extend colliding short IDs instead of conflating concurrent same-title work.
@@ -87,12 +97,12 @@ export function sidebarGroups(progress) {
     if (reported) {
       if (item.status === 'completed' || (bounded(item.task_id, 128) && ended.has(`${group.id}/${item.task_id}`))) return
       if (kind !== 'reported') name = name.replace(/^.*? · reported: /, '')
-      group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: short(`Reported: ${name || item.content}`, 56), status: item.status, reported: true })
+      group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: withIssue(group.issue, short(`Reported: ${withoutIssue(group.issue, name || item.content)}`, 56)), status: item.status, reported: true })
       return
     }
     if (kind === 'implementation' && item.status === 'completed') return
     if (!kind || kind === 'reported' || !detail) {
-      group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: clean(item.content), status: item.status })
+      group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: withIssue(group.issue, clean(item.content)), status: item.status })
       return
     }
     if (kind === 'check') name = checkNames.get(name.toLowerCase()) ?? name
@@ -110,7 +120,7 @@ export function sidebarGroups(progress) {
     else if (detail === 'starting') state = 'starting'
     else if (detail === 'native input accepted') state = 'accepted'
     else if (detail === 'interrupted') state = 'interrupted'
-    group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: `${short(name, 28)} · ${state}`, status })
+    group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: withIssue(group.issue, `${short(withoutIssue(group.issue, name), 28)} · ${state}`), status })
   })
   return groups
 }

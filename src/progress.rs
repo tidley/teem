@@ -55,6 +55,18 @@ pub fn set_plan(s: &Store, f: &str, items: &Value) -> Result<Value> {
     snapshot(s, f)
 }
 pub fn title(w: &Value) -> String {
+    let title = unlinked_title(w);
+    let Ok(issue) = issue_reference(&w["request"]["issue"]) else {
+        return title;
+    };
+    let title = without_issue_prefix(&issue, &title);
+    if title.is_empty() {
+        "Requested changes".into()
+    } else {
+        title.into()
+    }
+}
+fn unlinked_title(w: &Value) -> String {
     if let Some(t) = w["request"]["title"].as_str() {
         return t.into();
     }
@@ -80,7 +92,12 @@ pub fn title(w: &Value) -> String {
     }
 }
 fn row(w: &Value, suffix: &str, label: &str, status: &str, description: &str) -> Value {
-    json!({"id":format!("workflow_{}{}",text(w,"id").replace('-',""),suffix),"source":"supervisor","workflow_id":w["id"],"label":label,"status":status,"content":format!("{label} — {description}")})
+    let label = issue_prefix(&w["request"], label);
+    let mut row = json!({"id":format!("workflow_{}{}",text(w,"id").replace('-',""),suffix),"source":"supervisor","workflow_id":w["id"],"label":label,"status":status,"content":format!("{label} — {description}")});
+    if let Ok(issue) = issue_reference(&w["request"]["issue"]) {
+        row["issue"] = json!(issue);
+    }
+    row
 }
 fn task_state(s: &Store, id: &Value) -> Result<(String, String, String)> {
     if id.is_null() {
@@ -129,16 +146,20 @@ fn agent_detail(s: &Store, w: &Value, id: &Value, suffix: &str, label: &str) -> 
         .take(8)
         .enumerate()
         .map(|(i, t)| {
+            let content = text(t, "content");
+            let content = issue_reference(&w["request"]["issue"])
+                .map(|issue| without_issue_prefix(&issue, &content).to_owned())
+                .unwrap_or(content);
             let mut r = row(
                 w,
                 &format!("{suffix}_reported_{i}"),
-                &format!("{label} · reported: {}", text(t, "content")),
+                &format!("{label} · reported: {content}"),
                 &text(t, "status"),
                 "agent-reported progress only",
             );
             r["source"] = json!("agent-reported");
             r["task_id"] = id.clone();
-            r["sidebar"] = json!({"kind":"reported","label":text(t,"content")});
+            r["sidebar"] = json!({"kind":"reported","label":content});
             r
         })
         .collect())
@@ -284,6 +305,15 @@ pub fn snapshot(s: &Store, f: &str) -> Result<Value> {
         item["label"] = item["content"].clone();
         if let Some(id) = item["task_id"].as_str().map(str::to_owned) {
             let task = s.task(&id).ok().filter(|t| t["foreman"] == f);
+            if let Some(w) = task
+                .as_ref()
+                .and_then(|t| t["request"]["workflow_id"].as_str())
+                .and_then(|id| s.workflow(id).ok())
+                .filter(|w| w["foreman"] == f)
+            {
+                item["content"] = json!(issue_prefix(&w["request"], &text(item, "content")));
+                item["label"] = item["content"].clone();
+            }
             let state = task
                 .as_ref()
                 .map(|t| text(t, "state"))
@@ -354,7 +384,21 @@ pub fn snapshot(s: &Store, f: &str) -> Result<Value> {
                 short(&compact(&text(w, "detail")), 800)
             )
         };
-        result["latest_result"] = json!({"workflow_id":w["id"],"state":w["state"],"title":format!("{} · {}",text(w,"project"),title(w)),"content":content});
+        let title = issue_prefix(
+            &w["request"],
+            &format!("{} · {}", text(w, "project"), title(w)),
+        );
+        // Preserve the adapter's existing 300 UTF-16-unit outcome-title bound.
+        let mut units = 0;
+        let title: String = title
+            .chars()
+            .take_while(|c| {
+                units += c.len_utf16();
+                units <= 300
+            })
+            .collect();
+        result["latest_result"] =
+            json!({"workflow_id":w["id"],"state":w["state"],"title":title,"content":content});
     }
     Ok(result)
 }

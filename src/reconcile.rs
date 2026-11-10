@@ -70,6 +70,16 @@ pub fn submit(s: &Store, f: &str, args: &Value) -> Result<Value> {
         "Original project identity removed or changed"
     );
     let mut req = w["request"].clone();
+    if let Some(issue) = args.get("issue") {
+        let issue = issue_reference(issue)?;
+        if let Some(inherited) = req.get("issue") {
+            ensure!(
+                issue == issue_reference(inherited)?,
+                "Continuation cannot switch its inherited issue"
+            );
+        }
+        req["issue"] = json!(issue);
+    }
     req.as_object_mut()
         .context("Invalid prior request")?
         .remove("workers");

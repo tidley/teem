@@ -11,6 +11,7 @@ field at top level alongside `assignment` is an error, even if values agree.
 {
   "workflow_id": "RETAINED_WORKFLOW_UUID",
   "project": "pilot",
+  "issue": "tidley/teem#3",
   "title": "Fix compact dispatch",
   "assignment": {
     "scope": ["src/plugin.rs", "src/tools.json"],
@@ -26,6 +27,8 @@ field at top level alongside `assignment` is an error, even if values agree.
 `workers` is optional; omit it for the ordinary single-worker workflow. Existing
 one/two-worker bounds, disjoint scopes, prompt byte limits and project policy still
 apply. `title` remains optional and short; it is not a substitute for the prompt.
+New managed admissions also require the explicit authorised `issue` at top level
+in either form; see [issue tracking and historical compatibility](HERDR_PLUGIN.md#explicit-issue-tracking).
 
 ```json
 {
@@ -66,7 +69,7 @@ and retain the same SHA-256 across chunks. Existing records are not rewritten.
 
 - Legacy top-level string prompts remain accepted and **can still produce long
   default tool summaries**. Existing tool history is not retroactively compacted.
-- Compact workflow summaries still contain primitive UUID/project/title fields;
+- Compact workflow summaries still contain primitive UUID/project/issue/title fields;
   this change does not impose a new global UI length bound. Use a short title.
 - Native errors, security/permission prompts and human-only approval cards are
   not hidden or replaced. Admission is not execution, review approval or integration.
