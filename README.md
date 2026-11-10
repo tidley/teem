@@ -10,7 +10,7 @@ Herdr ↔ Foreman ↔ Teem supervisor ↔ Workers/reviewers
      Codr/White Noise — optional
 ```
 
-Teem and [Codr](https://github.com/tidley/codr)/White Noise are independent, optional integrations.
+Teem and [Codr](https://github.com/tidley/codr)/[White Noise](https://github.com/marmot-protocol/whitenoise-android) are independent, optional integrations.
 Teem does not import, call, configure, start, or restart [Codr](https://github.com/tidley/codr).
 Without Teem, an ordinary agent conversation works as before.
 With Teem, an explicitly bound Foreman can delegate and receive native completion events.
