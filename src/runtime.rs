@@ -476,6 +476,18 @@ impl Runtime for OpenCode {
                 format!("{}{path}", self.url),
             )
             .basic_auth("opencode", Some(&self.password));
+        // Admission can wait behind shared-server load. This is only the HTTP
+        // admission deadline, not an execution budget or permission to retry.
+        // Keep observations, interrupts and permission replies at ten seconds.
+        if method == "POST"
+            && (path == "/api/session"
+                || path
+                    .strip_prefix("/api/session/")
+                    .and_then(|p| p.strip_suffix("/prompt"))
+                    .is_some_and(|id| safe_id(id, "ses_")))
+        {
+            req = req.timeout(Duration::from_secs(60));
+        }
         if let Some(p) = payload {
             req = req.json(p);
         }

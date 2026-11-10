@@ -217,6 +217,11 @@ alter its captured allowance. Changes to source identity or approved checks stil
 block old qualification. Advanced source needs reconciliation and new evidence.
 MCP reloads machine-local configuration for each tool call; invalid configuration
 fails closed rather than silently using a stale policy.
+Native session creation and prompt admission allow up to 60 seconds for a busy
+OpenCode server to respond. Observations and control calls retain a ten-second
+deadline. This does not limit model execution time or enable automatic retries:
+an unknown admission outcome still reserves its exact native identity until
+reconciled or explicitly stopped. Never resend an uncertain prompt to recover it.
 
 With authorised local-commit authority, `foreman_integrate` accepts
 `commit_local=true`: it applies and commits only the exact qualified candidate,

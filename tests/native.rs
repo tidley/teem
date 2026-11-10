@@ -1403,6 +1403,47 @@ fn native_interrupt_transport_accepts_its_unwrapped_boolean_contract() {
     server.join().unwrap();
 }
 
+fn delayed_native_response(method: &str, path: &str) -> Result<Value> {
+    let tmp = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let registry = tmp.path().join("registry.json");
+    fs::write(&registry,json!({"url":format!("http://{}",listener.local_addr().unwrap()),"password":"test-only-password"}).to_string()).unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0; 4096];
+        let received = stream.read(&mut bytes).unwrap();
+        assert!(received > 0, "Native request did not arrive");
+        thread::sleep(Duration::from_secs(11));
+        // A ten-second control request deliberately disconnects before this.
+        let _=stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{\"data\":{\"id\":\"ok\"}}");
+    });
+    let runtime = runtime::OpenCode::new(&registry, "test/model").unwrap();
+    let result = runtime.request(method, path, None);
+    server.join().unwrap();
+    result
+}
+
+#[test]
+fn native_prompt_admission_survives_more_than_ten_seconds_of_server_load() {
+    assert_eq!(
+        delayed_native_response("POST", "/api/session/ses_test/prompt").unwrap(),
+        json!({"id":"ok"})
+    );
+}
+
+#[test]
+fn native_session_creation_survives_more_than_ten_seconds_of_server_load() {
+    assert_eq!(
+        delayed_native_response("POST", "/api/session").unwrap(),
+        json!({"id":"ok"})
+    );
+}
+
+#[test]
+fn native_observation_calls_keep_the_short_timeout() {
+    assert!(delayed_native_response("GET", "/api/session/ses_test").is_err());
+}
+
 #[test]
 fn native_stop_requires_exact_identity_and_does_not_call_queued_input_stopped() {
     struct NativeStop {
