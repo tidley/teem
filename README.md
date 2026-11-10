@@ -1,8 +1,8 @@
 # Teem
 
-A local Herdr plugin with one visible Foreman and up to two workers plus two reviewers per managed task.
-The supervisor is a native Rust executable, not another agent.
-The OpenCode TUI adapter uses the host's TypeScript interface.
+A local [Herdr](https://github.com/herdrdev/herdr) plugin with one visible Foreman and up to two workers plus two reviewers per managed task.
+The supervisor is a native [Rust](https://github.com/rust-lang/rust) executable, not another agent.
+The [OpenCode](https://github.com/anomalyco/opencode) TUI adapter uses the host's [TypeScript](https://github.com/microsoft/TypeScript) interface.
 
 ```text
 Herdr ↔ Foreman ↔ Teem supervisor ↔ Workers/reviewers
@@ -24,12 +24,12 @@ No paid worker run is part of repository setup.
 ## Components
 
 - `herdr-plugin.toml`: Teem actions, startup hook, and transient status popup.
-- `src/plugin.rs`: Herdr commands, fixed-binding MCP tools, and service unit output.
+- `src/plugin.rs`: [Herdr](https://github.com/herdrdev/herdr) commands, fixed-binding [MCP](https://github.com/modelcontextprotocol/modelcontextprotocol) tools, and service unit output.
 - `src/operator.rs`: explicit candidate integration, verified commit receipts and bounded Foreman color updates.
-- `src/store.rs`: SQLite tasks, per-task 2+2 limits, and exclusive checkout ownership.
-- `src/runtime.rs`: loopback-only OpenCode HTTP, completion admission and permission rules.
+- `src/store.rs`: [SQLite](https://sqlite.org/src/) tasks, per-task 2+2 limits, and exclusive checkout ownership.
+- `src/runtime.rs`: loopback-only [OpenCode](https://github.com/anomalyco/opencode) HTTP, completion admission and permission rules.
 - `src/progress.rs`: plans, atomic private progress snapshots and native todo observations.
-- `ui/teem-progress`: passive OpenCode TUI checklist; retains native todos for other conversations.
+- `ui/teem-progress`: passive [OpenCode](https://github.com/anomalyco/opencode) TUI checklist; retains native todos for other conversations.
 - `src/checkouts.rs`: private complete clones and hashed uncommitted candidate snapshots.
 - `src/checks.rs`: asynchronous approved checks and exact-snapshot receipts.
 - `src/workflows.rs`: bounded implementation/check/two-reviewer/revision progression.
@@ -44,9 +44,11 @@ No paid worker run is part of repository setup.
 herdr plugin install tidley/teem
 ```
 
-The manifest builds and installs `bin/teem` with Cargo. Rust 1.85+ and a native C
-toolchain are needed at installation; Rust and Cargo are not needed by
-the resulting executable. Git, Linux/systemd, Herdr and OpenCode remain required.
+The manifest builds and installs `bin/teem` with [Cargo](https://github.com/rust-lang/cargo).
+[Rust](https://github.com/rust-lang/rust) 1.85+ and a native C toolchain are needed
+at installation; Rust and Cargo are not needed by the resulting executable.
+[Git](https://github.com/git/git), [Linux](https://github.com/torvalds/linux)/[systemd](https://github.com/systemd/systemd),
+[Herdr](https://github.com/herdrdev/herdr) and [OpenCode](https://github.com/anomalyco/opencode) remain required.
 For a local checkout run `cargo run --locked --release -- install-plugin` before
 `herdr plugin link /absolute/path/to/teem`. See the plugin guide for explicit setup.
 Existing installations must explicitly replace their service and MCP executable
@@ -56,7 +58,7 @@ change those machine-local settings or replay tasks.
 
 ## Verify
 
-From this directory:
+From this directory (UI helper tests use [Bun](https://github.com/oven-sh/bun)):
 
 ```sh
 cargo test --locked
