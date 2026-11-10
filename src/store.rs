@@ -200,8 +200,10 @@ impl Store {
         ]
         .contains(&text(w, "state").as_str())
             && (foreman.is_empty() || w["foreman"] == foreman)
-            && self.projects[text(w, "project")]
-                == serde_json::from_str::<Value>(w["policy"].as_str().unwrap_or("null"))?)
+            && crate::workflows::compatible_policy(
+                &self.projects[text(w, "project")],
+                &serde_json::from_str::<Value>(w["policy"].as_str().unwrap_or("null"))?,
+            ))
     }
     pub fn submit(&self, f: &str, mut req: Value) -> Result<Value> {
         self.binding(f)?;

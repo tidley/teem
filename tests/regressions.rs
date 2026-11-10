@@ -923,6 +923,9 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
         "at least one dedicated implementation worker",
         "Do not bundle separate tasks or issues into a catch-all workflow",
         "explicit stop/handoff approval",
+        "teem_foreman_reconcile",
+        "Local commits of verified authorised work are permitted",
+        "continue only already-authorised work",
     ] {
         assert!(
             instruction.contains(rule),
@@ -944,6 +947,7 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
         ("teem_foreman_integrate", "ask"),
         ("teem_foreman_stop", "ask"),
         ("teem_foreman_color", "allow"),
+        ("teem_foreman_reconcile", "allow"),
     ] {
         assert!(
             permissions

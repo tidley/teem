@@ -493,6 +493,445 @@ fn operator_integration_applies_exact_candidate_and_updates_shared_status_withou
 }
 
 #[test]
+fn revision_budget_change_does_not_revoke_qualified_integration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, w) = ready_operator_fixture(tmp.path());
+    s.projects["project"]["max_revisions"] = json!(3);
+    let result = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_integrate",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    assert_eq!(result["state"], "applied");
+    assert_eq!(
+        s.workflow(&text(&w, "id")).unwrap()["policy"]["max_revisions"],
+        1
+    );
+}
+
+#[test]
+fn reconciliation_preserves_parent_and_requalifies_on_current_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, w) = ready_operator_fixture(tmp.path());
+    let parent = s
+        .query("SELECT * FROM workflows WHERE id=?", [text(&w, "id")])
+        .unwrap();
+    let source = tmp.path().join("source");
+    fs::write(source.join("unrelated"), "new source\n").unwrap();
+    git(&source, &["add", "unrelated"], None, None).unwrap();
+    git(&source, &["commit", "-qm", "advance"], None, None).unwrap();
+    let head = git_text(&source, &["rev-parse", "HEAD"]).unwrap();
+    s.projects["project"]["max_revisions"] = json!(3);
+    let id = uuid::Uuid::new_v4().to_string();
+    let args = json!({"workflow_id":id,"source_workflow_id":w["id"]});
+    let follow = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(follow["state"], "queued");
+    assert_eq!(follow["policy"]["max_revisions"], 3);
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap()["id"],
+        id
+    );
+    let f = Fake {
+        directory: source.to_str().unwrap().into(),
+        ..Default::default()
+    };
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "working", "{follow}");
+    assert_eq!(follow["base_revision"], head);
+    let task = s
+        .task(follow["data"]["rounds"][0]["worker_id"].as_str().unwrap())
+        .unwrap();
+    let checkout = PathBuf::from(text(&task, "checkout"));
+    assert_eq!(
+        fs::read_to_string(checkout.join("src/a")).unwrap(),
+        "changed\n"
+    );
+    assert!(
+        fs::read_to_string(checkout.join(".git/teem-reconciliation.patch"))
+            .unwrap()
+            .contains("+changed")
+    );
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    await_receipt(&follow["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "reviewing");
+    for review in array(&follow["data"]["rounds"][0]["review_ids"]) {
+        s.update(review.as_str().unwrap(),"succeeded",&json!({"snapshot":follow["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"pass","findings":[]}).to_string(),"").unwrap();
+    }
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["state"], "ready");
+    assert_eq!(
+        s.query("SELECT * FROM workflows WHERE id=?", [text(&w, "id")])
+            .unwrap(),
+        parent
+    );
+    assert_eq!(git_text(&source, &["rev-parse", "HEAD"]).unwrap(), head);
+    assert_eq!(fs::read_to_string(source.join("src/a")).unwrap(), "base\n");
+}
+
+#[test]
+fn approved_local_commit_records_exact_candidate_and_is_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let args = json!({"workflow_id":w["id"],"commit_local":true});
+    let receipt = plugin::call(&s, "ses_test", "foreman_integrate", &args).unwrap();
+    assert_eq!(receipt["state"], "committed");
+    let root = tmp.path().join("source");
+    assert_eq!(
+        git_text(&root, &["rev-parse", "HEAD"]).unwrap(),
+        receipt["commit"]
+    );
+    assert_eq!(
+        checkouts::source_revision(&root).unwrap(),
+        receipt["commit"]
+    );
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_integrate", &args).unwrap(),
+        receipt
+    );
+}
+
+#[test]
+fn local_commit_preserves_unrelated_staged_bytes_after_an_applied_integration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_integrate",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    let root = tmp.path().join("source");
+    fs::write(root.join("src/a"), "valuable staged work\n").unwrap();
+    git(&root, &["add", "src/a"], None, None).unwrap();
+    fs::write(root.join("src/a"), "changed\n").unwrap();
+    let index = fs::read(root.join(".git/index")).unwrap();
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_integrate",
+            &json!({"workflow_id":w["id"],"commit_local":true})
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+    assert_eq!(
+        git_text(&root, &["show", ":src/a"]).unwrap(),
+        "valuable staged work"
+    );
+    assert_eq!(
+        git_text(&root, &["rev-parse", "HEAD"]).unwrap(),
+        w["base_revision"]
+    );
+}
+
+#[test]
+fn blocked_continuation_with_live_worker_prevents_another_reconciliation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, w) = ready_operator_fixture(tmp.path());
+    let first = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]}),
+    )
+    .unwrap();
+    let f = Fake {
+        directory: tmp.path().join("source").to_str().unwrap().into(),
+        ..Default::default()
+    };
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    runtime::tick(&s, &f).unwrap();
+    let first = s.workflow(&text(&first, "id")).unwrap();
+    let task = text(&first["data"]["rounds"][0], "worker_id");
+    s.update(&task, "running", "", "").unwrap();
+    s.projects["project"]["checks"][0]["timeout"] = json!(1);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    assert_eq!(s.workflow(&text(&first, "id")).unwrap()["state"], "blocked");
+    let another =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &another).is_err());
+    assert_eq!(s.task(&task).unwrap()["state"], "running");
+}
+
+#[test]
+fn mcp_reloads_project_policy_without_reconnecting_and_fails_closed() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, _) = workflow_fixture(tmp.path(), false);
+    let config = tmp.path().join("config.toml");
+    let policy = |n| {
+        format!(
+            "enabled = false\nstate_dir = {:?}\n[projects.project]\npath = {:?}\nmax_revisions = {n}\n[[projects.project.checks]]\nname = 'tests'\nkind = 'test'\nargv = ['git','status','--porcelain']\n",
+            s.directory,
+            tmp.path().join("source")
+        )
+    };
+    fs::write(&config, policy(1)).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_teem"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "mcp",
+            "--foreman",
+            "ses_test",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    for n in [1, 3] {
+        fs::write(&config, policy(n)).unwrap();
+        writeln!(input,"{}",json!({"jsonrpc":"2.0","id":n,"method":"tools/call","params":{"name":"foreman_status","arguments":{"section":"projects","limit":5}}})).unwrap();
+        input.flush().unwrap();
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        let response: Value = serde_json::from_str(&line).unwrap();
+        let status: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(status["projects"][0]["max_revisions"], n);
+    }
+    fs::write(&config, "invalid TOML [").unwrap();
+    writeln!(input,"{}",json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"foreman_status","arguments":{"section":"projects"}}})).unwrap();
+    input.flush().unwrap();
+    let mut line = String::new();
+    output.read_line(&mut line).unwrap();
+    let response: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(response["result"]["isError"], true);
+    drop(input);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn reconciliation_conflicts_are_given_to_worker_without_forcing_old_code() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let source = tmp.path().join("source");
+    fs::write(source.join("src/a"), "newer conflicting source\n").unwrap();
+    git(&source, &["add", "src/a"], None, None).unwrap();
+    git(&source, &["commit", "-qm", "conflict"], None, None).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":id,"source_workflow_id":w["id"]}),
+    )
+    .unwrap();
+    let f = Fake {
+        directory: source.to_str().unwrap().into(),
+        ..Default::default()
+    };
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "working", "{follow}");
+    let checkout = PathBuf::from(text(&follow["data"]["rounds"][0], "checkout"));
+    assert_eq!(
+        fs::read_to_string(checkout.join("src/a")).unwrap(),
+        "newer conflicting source\n"
+    );
+    assert_eq!(
+        read_json(&checkout.join(".git/teem-reconciliation.json")).unwrap()["seeded"],
+        false
+    );
+    assert_eq!(
+        fs::read_to_string(source.join("src/a")).unwrap(),
+        "newer conflicting source\n"
+    );
+}
+
+#[test]
+fn exhausted_candidate_continuation_uses_current_checks_not_old_qualification() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, mut w) = ready_operator_fixture(tmp.path());
+    s.save_workflow(&mut w, "needs_attention", "Exhausted fixture")
+        .unwrap();
+    s.projects["project"]["checks"][0]["argv"] = json!(["git", "diff", "--exit-code"]);
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    let follow = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(follow["policy"]["checks"], s.projects["project"]["checks"]);
+    assert!(array(&follow["data"]["rounds"]).is_empty());
+    assert_eq!(
+        s.workflow(&text(&w, "id")).unwrap()["state"],
+        "needs_attention"
+    );
+}
+
+#[test]
+fn reconciliation_reservation_covers_descendants_of_the_original_candidate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let mut first = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]}),
+    )
+    .unwrap();
+    // Retained exhausted child fixture with the same immutable patch, and no
+    // native tasks. The grandchild still reserves the original task lineage.
+    first["data"] = w["data"].clone();
+    first["base_revision"] = w["base_revision"].clone();
+    s.exec(
+        "UPDATE workflows SET data=?,base_revision=? WHERE id=?",
+        rusqlite::params![
+            canonical(&first["data"]),
+            text(&first, "base_revision"),
+            text(&first, "id")
+        ],
+    )
+    .unwrap();
+    s.save_workflow(&mut first, "needs_attention", "Retained fixture candidate")
+        .unwrap();
+    let grandchild = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":first["id"]}),
+    )
+    .unwrap();
+    assert_eq!(grandchild["request"]["reconcile_root"], w["id"]);
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_reconcile",
+            &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn reconciliation_rejects_foreign_active_duplicate_and_tampered_candidates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    s.bind("ses_other", "other-terminal").unwrap();
+    assert!(plugin::call(&s, "ses_other", "foreman_reconcile", &args).is_err());
+    let first = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    let other =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &other).is_err());
+    let active =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":first["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &active).is_err());
+    let patch = text(&w["data"]["rounds"][0]["snapshot"], "patch");
+    fs::remove_file(&patch).unwrap();
+    fs::write(&patch, "tampered").unwrap();
+    let source = tmp.path().join("source");
+    let f = Fake {
+        directory: source.to_str().unwrap().into(),
+        ..Default::default()
+    };
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    assert_eq!(
+        s.workflow(first["id"].as_str().unwrap()).unwrap()["state"],
+        "blocked"
+    );
+    assert!(
+        s.tasks(None)
+            .unwrap()
+            .iter()
+            .all(|t| t["request"]["workflow_id"] != first["id"])
+    );
+}
+
+#[test]
+fn integration_still_rejects_changed_checks_and_unknown_local_commit_outcomes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, w) = ready_operator_fixture(tmp.path());
+    let original = s.projects.clone();
+    s.projects["project"]["checks"][0]["timeout"] = json!(1);
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_integrate",
+            &json!({"workflow_id":w["id"],"commit_local":true})
+        )
+        .is_err()
+    );
+    s.projects = original;
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_integrate",
+            &json!({"workflow_id":w["id"],"commit_local":true,"commit":w["base_revision"]})
+        )
+        .is_err()
+    );
+    let applied = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_integrate",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    let mut reserved = applied;
+    reserved["state"] = json!("committing");
+    s.exec(
+        "UPDATE integrations SET receipt=? WHERE workflow_id=?",
+        rusqlite::params![canonical(&reserved), text(&w, "id")],
+    )
+    .unwrap();
+    let source = tmp.path().join("source");
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_integrate",
+            &json!({"workflow_id":w["id"],"commit_local":true})
+        )
+        .is_err()
+    );
+    assert_eq!(
+        git_text(&source, &["rev-parse", "HEAD"]).unwrap(),
+        w["base_revision"]
+    );
+    // Simulate a commit whose response was lost: a read can record it, not
+    // create a duplicate. Staging/commit here is test setup, not a tool retry.
+    git(&source, &["add", "src/a"], None, None).unwrap();
+    git(
+        &source,
+        &[
+            "commit",
+            "-m",
+            &format!("Teem integrate workflow {}", text(&w, "id")),
+        ],
+        None,
+        None,
+    )
+    .unwrap();
+    let result = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_integrate",
+        &json!({"workflow_id":w["id"],"commit_local":true}),
+    )
+    .unwrap();
+    assert_eq!(result["state"], "committed");
+    assert_eq!(
+        git_text(&source, &["rev-list", "--count", "HEAD"]).unwrap(),
+        "2"
+    );
+}
+
+#[test]
 fn operator_integration_rejects_dirty_source_foreign_owner_and_changed_evidence() {
     let tmp = tempfile::tempdir().unwrap();
     let (s, w) = ready_operator_fixture(tmp.path());
@@ -1595,8 +2034,9 @@ fn default_workflow_stops_after_four_implementation_rounds_without_replay() {
 
 fn exercise_default_revisions(pass_last: bool) {
     let tmp = tempfile::tempdir().unwrap();
-    let (s, f, w) = workflow_fixture_revisions(tmp.path(), false, None);
+    let (mut s, f, w) = workflow_fixture_revisions(tmp.path(), false, None);
     assert_eq!(w["policy"]["max_revisions"], 3);
+    s.projects["project"]["max_revisions"] = json!(0);
     let id = text(&w, "id");
     let mut runner = runner();
     workflows::tick(&s, &f, &mut runner).unwrap();

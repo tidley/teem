@@ -102,6 +102,7 @@ pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
         "foreman_integrate" => crate::operator::integrate(s, f, args),
         "foreman_color" => crate::operator::color(s, f, args),
         "foreman_stop" => crate::control::request(s, f, args),
+        "foreman_reconcile" => crate::reconcile::submit(s, f, args),
         "foreman_ack" => {
             s.ack(f, args["event_id"].as_str().context("Invalid event ID")?)?;
             Ok(json!({"acknowledged":true}))
@@ -109,7 +110,16 @@ pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
         _ => bail!("Unknown tool"),
     }
 }
-pub fn mcp(s: &Store, f: &str, mut input: impl BufRead, mut output: impl Write) -> Result<()> {
+pub fn mcp(s: &Store, f: &str, input: impl BufRead, output: impl Write) -> Result<()> {
+    mcp_configured(s, f, input, output, None)
+}
+fn mcp_configured(
+    s: &Store,
+    f: &str,
+    mut input: impl BufRead,
+    mut output: impl Write,
+    config: Option<&Path>,
+) -> Result<()> {
     s.binding(f)?;
     loop {
         let mut line = Vec::new();
@@ -155,12 +165,18 @@ pub fn mcp(s: &Store, f: &str, mut input: impl BufRead, mut output: impl Write) 
                     "ping" => json!({}),
                     "tools/list" => json!({"tools":tools()}),
                     "tools/call" => {
-                        match call(
-                            s,
-                            f,
-                            &text(&params, "name"),
-                            params.get("arguments").unwrap_or(&json!({})),
-                        ) {
+                        let result = (|| {
+                            let fresh = config
+                                .map(|path| load(path).and_then(|c| open(&c)))
+                                .transpose()?;
+                            call(
+                                fresh.as_ref().unwrap_or(s),
+                                f,
+                                &text(&params, "name"),
+                                params.get("arguments").unwrap_or(&json!({})),
+                            )
+                        })();
+                        match result {
                             Ok(data) => {
                                 let rendered = if text(&params, "name") == "foreman_status" {
                                     serde_json::to_string_pretty(&data)?
@@ -448,7 +464,13 @@ pub fn main(args: Vec<String>) -> Result<()> {
             let f = &rest[1];
             if command == "mcp" {
                 ensure!(rest.len() == 2, "MCP accepts only --foreman ID");
-                mcp(&s, f, std::io::stdin().lock(), std::io::stdout().lock())?;
+                mcp_configured(
+                    &s,
+                    f,
+                    std::io::stdin().lock(),
+                    std::io::stdout().lock(),
+                    Some(&config),
+                )?;
             } else {
                 println!(
                     "{}",

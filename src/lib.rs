@@ -7,6 +7,7 @@ pub mod inspection;
 pub mod operator;
 pub mod plugin;
 pub mod progress;
+pub mod reconcile;
 pub mod runtime;
 pub mod status;
 pub mod store;

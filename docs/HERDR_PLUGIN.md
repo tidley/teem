@@ -156,8 +156,9 @@ changes into every new task. Select only the relevant changes for each handoff.
 The current example profile supports ordinary local edits. Shell commands and
 candidate integration require native approval; it cannot edit its own OpenCode
 configuration or Git metadata. Use the bounded color tool for appearance changes.
-Commits, publication, destructive actions and deployment still require their own
-user authorisation. Never use shell/API access to answer worker permission cards
+The profile permits local commits of verified authorised work through the native
+integration tool; publication, destructive actions and deployment still require
+separate user authorisation. Never use shell/API access to answer worker permission cards
 or to change Teem state. Edit permissions are not an OS sandbox.
 
 Integration rechecks the patch digest, approved check receipts and both reviewers
@@ -187,6 +188,44 @@ This is a same-user local integration, not protection against arbitrary local pr
 Background sessions deny MCP tools and delegation through their runtime permission rules.
 
 ## Managed workflows and routine checks
+
+### Continuing authorised work
+
+The Foreman can continue routine implementation and bounded corrections within an
+authorised issue without requesting the same approval again. Integration approval
+also covers necessary same-task reconciliation and its qualified successor. It
+does not authorise another issue, endless retries, publication, installation or
+deployment. Exhausted native workflows stay immutable; uncertain or active work
+must not be replaced. Integration and stop tools retain native approval gates.
+
+Use `foreman_reconcile` with a new retained `workflow_id` and the terminal
+`source_workflow_id` to carry a ready or exhausted candidate into a fresh managed
+workflow. The project identity, task scope and acceptance criteria are inherited;
+the current project policy and clean source base are used. Active, uncertain,
+foreign and duplicate active continuations are rejected. Parent snapshots and
+review/check evidence remain unchanged. Each continuation has a dedicated worker
+and must pass fresh checks and two independent reviews, even if the old patch
+applies cleanly. The worker can read retained patch/findings in
+`.git/teem-reconciliation.patch` and `.git/teem-reconciliation.json`. If application
+conflicts, current source is retained and the worker reconciles within scope;
+the tool never force-applies a patch to source. A new continuation is not automatic
+permission to renew exhausted budgets forever.
+
+Revision budgets are scheduling limits, not integration requirements. A change
+only to `max_revisions` does not revoke an existing candidate's qualification or
+alter its captured allowance. Changes to source identity or approved checks still
+block old qualification. Advanced source needs reconciliation and new evidence.
+MCP reloads machine-local configuration for each tool call; invalid configuration
+fails closed rather than silently using a stale policy.
+
+With authorised local-commit authority, `foreman_integrate` accepts
+`commit_local=true`: it applies and commits only the exact qualified candidate,
+records the receipt, and leaves source clean for serial integration. It never
+pushes or publishes. Do not combine it with an existing `commit` argument.
+A durable committing marker prevents automatic retries after an uncertain commit;
+only a matching commit can be reconciled by reads. Dirty or unrelated source work
+is never automatically committed. Check the returned receipt before reporting
+integration, and distinguish local commits from installation or publication.
 
 Add a machine-local project policy to the plugin configuration, not to worker-editable
 source. Only explicitly configured projects can run managed work:

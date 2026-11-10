@@ -172,15 +172,26 @@
   },
   {
     "name": "foreman_integrate",
-    "description": "After explicit user approval, apply an exact ready candidate to its original clean source at its original base. Rechecks approved tests and both snapshot-bound reviews; never commits, pushes, deploys or repeats uncertain operations. Alternatively provide the full commit ID to verify and record an already integrated exact-candidate commit. Status and passive progress share the durable integration receipt; publication is not implied. Dirty or advanced sources require separate reconciliation, not a forced apply.",
+    "description": "Within explicit user integration approval, apply an exact ready candidate to clean source at its qualified base. Rechecks approved tests and both snapshot-bound reviews. Revision-budget-only changes do not invalidate qualification; changed check requirements still do. With approved local-commit authority, commit_local=true also records the exact candidate locally so serial integrations can continue. Never pushes, deploys or repeats uncertain apply/commit operations. Alternatively provide the full existing commit ID to verify and record it. Dirty source must be preserved. Advanced source or changed checks need foreman_reconcile and fresh qualification, never force apply. Integration approval covers that same-task preparation, not publication or new scope.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "workflow_id": { "type": "string" },
-        "commit": { "type": "string", "description": "Optional full existing integration commit to verify and record; omit to apply locally" }
+        "commit": { "type": "string", "description": "Optional full existing integration commit to verify and record; omit to apply locally" },
+        "commit_local": {"type":"boolean","description":"With user-authorised local-commit authority, commit only the exact qualified integration locally. Mutually exclusive with commit. Unknown outcomes reconcile by reads, never a second commit."}
       },
       "required": ["workflow_id"],
       "additionalProperties": false
+    }
+  },
+  {
+    "name": "foreman_reconcile",
+    "description": "Continue the SAME authorised task from a ready or exhausted candidate in a fresh managed workflow on current clean source and current project policy. Retain a new workflow_id and source_workflow_id; scope and acceptance criteria are inherited, not expanded. Preserves parent evidence. A dedicated worker receives the retained patch/findings; conflicts require scoped reconciliation, never force application to source. All approved checks and two independent reviews run afresh. No integration, commit, publication, native replay, active/uncertain replacement or duplicate active continuation. Integration approval includes needed same-task reconciliation; do not ask again for routine in-scope preparation. Does not grant new task scope or authorise an endless retry loop.",
+    "inputSchema": {
+      "type":"object",
+      "properties":{"workflow_id":{"type":"string"},"source_workflow_id":{"type":"string"}},
+      "required":["workflow_id","source_workflow_id"],
+      "additionalProperties":false
     }
   },
   {

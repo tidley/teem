@@ -36,7 +36,7 @@ pub fn description(value: &Value) -> String {
 
 fn source(s: &Store, w: &Value) -> Result<PathBuf> {
     ensure!(
-        s.projects[text(w, "project")] == w["policy"],
+        workflows::compatible_policy(&s.projects[text(w, "project")], &w["policy"]),
         "Project policy changed; integration is not authorised"
     );
     let root = PathBuf::from(text(&w["policy"], "path"));
@@ -104,6 +104,14 @@ pub fn integrate(s: &Store, f: &str, args: &Value) -> Result<Value> {
     s.binding(f)?;
     let id = text(args, "workflow_id");
     uuid(&id)?;
+    let commit_local = match args.get("commit_local") {
+        None => false,
+        Some(v) => v.as_bool().context("commit_local must be a boolean")?,
+    };
+    ensure!(
+        !commit_local || args.get("commit").is_none(),
+        "Choose commit_local or an existing commit, not both"
+    );
     let w = s.workflow(&id)?;
     ensure!(
         w["foreman"] == f,
@@ -167,6 +175,10 @@ pub fn integrate(s: &Store, f: &str, args: &Value) -> Result<Value> {
     if value["state"] == "committed" {
         return Ok(value);
     }
+    if value["state"] == "committing" {
+        // A lost commit response is reconciled by reads, never a second commit.
+        return committed(s, &w, &root, value);
+    }
     if !receipt(s, &id)?.is_null() {
         checkouts::validate(&root, &text(&w, "base_revision"), &text(&snapshot, "tree")).context(
             "Previous integration needs manual inspection; never repeat an uncertain apply",
@@ -197,6 +209,66 @@ pub fn integrate(s: &Store, f: &str, args: &Value) -> Result<Value> {
         value["applied_at"] = json!(now());
         save(s, &id, &value)?;
     }
+    if commit_local {
+        // write-tree can refresh cache-tree entries in its index. Inspect a
+        // copy of the actual index so even a refusal leaves staged bytes intact.
+        let index_path = PathBuf::from(git_text(&root, &["rev-parse", "--git-path", "index"])?);
+        let index_path = if index_path.is_absolute() {
+            index_path
+        } else {
+            root.join(index_path)
+        };
+        let tmp = tempfile::tempdir_in(&s.directory)?;
+        let copy = tmp.path().join("index");
+        write_new(&copy, &regular(&index_path, 64 * 1024 * 1024)?, 0o600)?;
+        let staged = String::from_utf8(git(&root, &["write-tree"], None, Some(&copy))?)?
+            .trim()
+            .to_owned();
+        let base_tree = git_text(
+            &root,
+            &[
+                "rev-parse",
+                &format!("{}^{{tree}}", text(&w, "base_revision")),
+            ],
+        )?;
+        ensure!(
+            staged == base_tree || json!(staged) == snapshot["tree"],
+            "Source index contains other staged work; preserve it and reconcile before local commit"
+        );
+        value["state"] = json!("committing");
+        save(s, &id, &value)?;
+        // Source validation above includes the full index and working tree.
+        // Recheck after staging; unrelated work must never enter the commit.
+        git(&root, &["add", "-A", "--", "."], None, None)?;
+        ensure!(
+            git_text(&root, &["write-tree"])? == snapshot["tree"],
+            "Staged tree differs from exact qualified candidate; inspect without retrying commit"
+        );
+        git(
+            &root,
+            &["commit", "-m", &format!("Teem integrate workflow {id}")],
+            None,
+            None,
+        )?;
+        return committed(s, &w, &root, value);
+    }
+    Ok(value)
+}
+
+fn committed(s: &Store, w: &Value, root: &Path, mut value: Value) -> Result<Value> {
+    let head = checkouts::source_revision(root)
+        .context("Local commit outcome uncertain; preserve source and inspect without repeating")?;
+    ensure!(
+        git_text(root, &["rev-parse", "HEAD^{tree}"])? == value["tree"]
+            && git_text(root, &["rev-parse", "HEAD^"])? == w["base_revision"]
+            && git_text(root, &["log", "-1", "--format=%s"])?
+                == format!("Teem integrate workflow {}", text(w, "id")),
+        "Local commit does not match reserved integration; inspect without repeating"
+    );
+    value["state"] = json!("committed");
+    value["commit"] = json!(head);
+    value["recorded_at"] = json!(now());
+    save(s, &text(w, "id"), &value)?;
     Ok(value)
 }
 
