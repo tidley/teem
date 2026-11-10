@@ -598,6 +598,400 @@ fn approved_local_commit_records_exact_candidate_and_is_idempotent() {
     );
 }
 
+// Retain an actual checked candidate with one snapshot-bound pass and one
+// uncertain native reviewer, then stop the latter through the managed path.
+fn stopped_candidate_fixture(tmp: &Path) -> (Store, Fake, Value) {
+    let (s, f, w) = workflow_fixture(tmp, false);
+    let id = text(&w, "id");
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    await_receipt(&w["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    let reviews = array(&w["data"]["rounds"][0]["review_ids"]);
+    s.update(reviews[1].as_str().unwrap(), "succeeded", &json!({"snapshot":w["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"pass","findings":[]}).to_string(), "").unwrap();
+    runtime::tick(&s, &f).unwrap();
+    s.update(
+        reviews[0].as_str().unwrap(),
+        "uncertain",
+        "retained partial result",
+        "No matching native input",
+    )
+    .unwrap();
+    *f.stop_live.borrow_mut() = true;
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_stop",
+        &json!({"workflow_id":id,"task_id":reviews[0]}),
+    )
+    .unwrap();
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":id});
+    assert_eq!(s.workflow(&id).unwrap()["stop"]["state"], "requested");
+    let reviewer = s.task(reviews[0].as_str().unwrap()).unwrap();
+    assert!(!f.is_stopped(&reviewer).unwrap());
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    teem::control::tick(&s, &f).unwrap();
+    assert_eq!(
+        s.workflow(&id).unwrap()["stop"]["targets"][0]["state"],
+        "waiting"
+    );
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    teem::control::tick(&s, &f).unwrap();
+    let w = s.workflow(&id).unwrap();
+    assert_eq!(w["state"], "blocked");
+    assert_eq!(w["stop"]["state"], "stopped");
+    let reviewer = s.task(reviews[0].as_str().unwrap()).unwrap();
+    assert!(f.is_stopped(&reviewer).unwrap());
+    assert_eq!(f.calls.borrow().iter().filter(|c| c.0 == "STOP").count(), 1);
+    assert_eq!(
+        s.task(reviews[0].as_str().unwrap()).unwrap()["state"],
+        "interrupted"
+    );
+    (s, f, w)
+}
+
+#[test]
+fn confirmed_stop_handoff_seeds_while_preparing_and_requires_fresh_qualification() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, f, w) = stopped_candidate_fixture(tmp.path());
+    let parent = s.workflow(&text(&w, "id")).unwrap();
+    let tasks = s.tasks(None).unwrap();
+    let stops = s.query("SELECT * FROM task_stops", []).unwrap();
+    let events = s.query("SELECT * FROM events", []).unwrap();
+    let source = tmp.path().join("source");
+    fs::write(source.join("unrelated"), "advanced source\n").unwrap();
+    git(&source, &["add", "unrelated"], None, None).unwrap();
+    git(&source, &["commit", "-qm", "advance"], None, None).unwrap();
+    let head = git_text(&source, &["rev-parse", "HEAD"]).unwrap();
+    s.projects["project"]["max_revisions"] = json!(3);
+    s.projects["project"]["checks"][0]["argv"] = json!(["git", "diff", "--check"]);
+    let id = uuid::Uuid::new_v4().to_string();
+    let args = json!({"workflow_id":id,"source_workflow_id":w["id"]});
+    let follow = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(follow["state"], "queued");
+    assert_eq!(follow["request"]["scope"], w["request"]["scope"]);
+    assert_eq!(follow["request"]["prompt"], w["request"]["prompt"]);
+    assert_eq!(follow["request"]["reconcile_root"], w["id"]);
+    assert_eq!(follow["policy"], s.projects["project"]);
+    assert!(array(&follow["data"]["rounds"]).is_empty());
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap()["id"],
+        id
+    );
+    let duplicate =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &duplicate).is_err());
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "working", "{follow}");
+    assert_eq!(follow["base_revision"], head);
+    let round = &follow["data"]["rounds"][0];
+    assert_eq!(array(&round["worker_ids"]).len(), 1);
+    assert!(round["check_result"].is_null());
+    assert!(array(&round["review_ids"]).is_empty());
+    let checkout = PathBuf::from(text(round, "checkout"));
+    assert_eq!(
+        fs::read_to_string(checkout.join("src/a")).unwrap(),
+        "changed\n"
+    );
+    let notes = read_json(&checkout.join(".git/teem-reconciliation.json")).unwrap();
+    assert_eq!(notes["source_workflow_id"], w["id"]);
+    assert_eq!(notes["seeded"], true);
+    assert_eq!(
+        notes["snapshot"],
+        w["data"]["rounds"][0]["snapshot"]["sha256"]
+    );
+    assert_eq!(
+        fs::read(checkout.join(".git/teem-reconciliation.patch")).unwrap(),
+        fs::read(text(&w["data"]["rounds"][0]["snapshot"], "patch")).unwrap()
+    );
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "checking");
+    assert_ne!(
+        follow["data"]["rounds"][0]["check_handle"],
+        w["data"]["rounds"][0]["check_handle"]
+    );
+    await_receipt(&follow["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "reviewing");
+    let reviews = array(&follow["data"]["rounds"][0]["review_ids"]);
+    assert_eq!(reviews.len(), 2);
+    assert_ne!(reviews[0], reviews[1]);
+    for (index, review) in reviews.iter().enumerate() {
+        assert!(!array(&w["data"]["rounds"][0]["review_ids"]).contains(review));
+        s.update(review.as_str().unwrap(), "succeeded", &json!({"snapshot":follow["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"pass","findings":[]}).to_string(), "").unwrap();
+        if index == 0 {
+            workflows::tick(&s, &f, &mut runner).unwrap();
+            assert_eq!(s.workflow(&id).unwrap()["state"], "reviewing");
+        }
+    }
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["state"], "ready");
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap(), parent);
+    assert_eq!(s.query("SELECT * FROM task_stops", []).unwrap(), stops);
+    for task in tasks {
+        assert_eq!(s.task(&text(&task, "id")).unwrap(), task);
+    }
+    for event in events {
+        assert_eq!(
+            s.query("SELECT * FROM events WHERE id=?", [text(&event, "id")])
+                .unwrap(),
+            vec![event]
+        );
+    }
+    assert_eq!(git_text(&source, &["rev-parse", "HEAD"]).unwrap(), head);
+    assert_eq!(fs::read_to_string(source.join("src/a")).unwrap(), "base\n");
+}
+
+#[test]
+fn stopped_handoff_rejects_unconfirmed_foreign_and_invalid_sources() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = stopped_candidate_fixture(tmp.path());
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    let stopped_task = text(&w["stop"]["targets"][0], "task_id");
+    let sibling = s
+        .task(w["data"]["rounds"][0]["review_ids"][1].as_str().unwrap())
+        .unwrap();
+    // Model observed reservations directly: update rejects queued and preserves
+    // terminal outcomes, including this already-succeeded sibling.
+    for state in ["queued", "starting", "accepted", "running", "uncertain"] {
+        s.exec(
+            "UPDATE tasks SET state=? WHERE id=?",
+            [state, &text(&sibling, "id")],
+        )
+        .unwrap();
+        assert_eq!(s.task(&text(&sibling, "id")).unwrap()["state"], state);
+        assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    }
+    s.exec(
+        "UPDATE tasks SET state=? WHERE id=?",
+        [text(&sibling, "state"), text(&sibling, "id")],
+    )
+    .unwrap();
+    assert_eq!(s.task(&text(&sibling, "id")).unwrap(), sibling);
+    for state in ["requested", "attempting", "waiting", "uncertain"] {
+        s.exec(
+            "UPDATE task_stops SET state=? WHERE task_id=?",
+            [state, &stopped_task],
+        )
+        .unwrap();
+        assert!(
+            plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err(),
+            "{state}"
+        );
+    }
+    s.exec(
+        "UPDATE task_stops SET state='stopped' WHERE task_id=?",
+        [&stopped_task],
+    )
+    .unwrap();
+    s.bind("ses_other", "other-terminal").unwrap();
+    assert!(plugin::call(&s, "ses_other", "foreman_reconcile", &args).is_err());
+    for state in ["failed", "working"] {
+        s.exec(
+            "UPDATE workflows SET state=? WHERE id=?",
+            [state, &text(&w, "id")],
+        )
+        .unwrap();
+        assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    }
+    s.exec(
+        "UPDATE workflows SET state='blocked' WHERE id=?",
+        [text(&w, "id")],
+    )
+    .unwrap();
+    s.exec(
+        "DELETE FROM workflow_stops WHERE workflow_id=?",
+        [text(&w, "id")],
+    )
+    .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    s.exec(
+        "INSERT INTO workflow_stops VALUES (?,?)",
+        rusqlite::params![text(&w, "id"), now()],
+    )
+    .unwrap();
+    let checkout = PathBuf::from(text(&w["data"]["rounds"][0], "checkout"));
+    fs::write(checkout.join("src/a"), "tampered checkout\n").unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    fs::write(checkout.join("src/a"), "changed\n").unwrap();
+    let mut data = w["data"].clone();
+    data["rounds"][0]["snapshot"] = Value::Null;
+    s.exec(
+        "UPDATE workflows SET data=? WHERE id=?",
+        [canonical(&data), text(&w, "id")],
+    )
+    .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    let mut data = w["data"].clone();
+    data["rounds"][0]["snapshot"]["base"] = json!("0".repeat(40));
+    s.exec(
+        "UPDATE workflows SET data=? WHERE id=?",
+        [canonical(&data), text(&w, "id")],
+    )
+    .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    s.exec(
+        "UPDATE workflows SET data=? WHERE id=?",
+        [canonical(&w["data"]), text(&w, "id")],
+    )
+    .unwrap();
+    let patch = text(&w["data"]["rounds"][0]["snapshot"], "patch");
+    fs::remove_file(&patch).unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    fs::write(&patch, "tampered patch").unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    assert_eq!(s.workflows("ses_test").unwrap().len(), 1);
+}
+
+#[test]
+fn stopped_handoff_requires_a_retained_in_scope_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_stop",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    teem::control::tick(&s, &f).unwrap();
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = stopped_candidate_fixture(tmp.path());
+    let checkout = PathBuf::from(text(&w["data"]["rounds"][0], "checkout"));
+    fs::write(checkout.join("outside"), "not this task\n").unwrap();
+    let snapshot = checkouts::capture(
+        &checkout,
+        &text(&w, "base_revision"),
+        &["src".into(), "outside".into()],
+        &tmp.path().join("outside-snapshot"),
+    )
+    .unwrap();
+    let mut data = w["data"].clone();
+    data["rounds"][0]["snapshot"] = snapshot;
+    s.exec(
+        "UPDATE workflows SET data=? WHERE id=?",
+        [canonical(&data), text(&w, "id")],
+    )
+    .unwrap();
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+}
+
+#[test]
+fn stopped_handoff_checks_full_lineage_and_rechecks_it_before_seeding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = stopped_candidate_fixture(tmp.path());
+    let child = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]}),
+    )
+    .unwrap();
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let child = s.workflow(&text(&child, "id")).unwrap();
+    let task = text(&child["data"]["rounds"][0], "worker_id");
+    s.exec(
+        "UPDATE workflows SET state='blocked' WHERE id=?",
+        [text(&child, "id")],
+    )
+    .unwrap();
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    // Include queued reservations without using the runtime transition API.
+    for state in ["queued", "starting", "accepted", "running", "uncertain"] {
+        s.exec("UPDATE tasks SET state=? WHERE id=?", [state, &task])
+            .unwrap();
+        assert_eq!(s.task(&task).unwrap()["state"], state);
+        assert!(
+            plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err(),
+            "{state}"
+        );
+    }
+    s.update(&task, "interrupted", "", "").unwrap();
+    s.exec(
+        "INSERT INTO task_stops(task_id,state) VALUES (?,'uncertain')",
+        [&task],
+    )
+    .unwrap();
+    for state in ["requested", "attempting", "waiting", "uncertain"] {
+        s.exec(
+            "UPDATE task_stops SET state=? WHERE task_id=?",
+            [state, &task],
+        )
+        .unwrap();
+        assert!(
+            plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err(),
+            "{state}"
+        );
+    }
+    s.exec(
+        "UPDATE task_stops SET state='stopped' WHERE task_id=?",
+        [&task],
+    )
+    .unwrap();
+    // A retained stopped sibling/descendant fixture. Its source snapshot is the
+    // original candidate; the root task must still reserve the whole lineage.
+    s.exec(
+        "UPDATE workflows SET data=?,base_revision=? WHERE id=?",
+        rusqlite::params![
+            canonical(&w["data"]),
+            text(&w, "base_revision"),
+            text(&child, "id")
+        ],
+    )
+    .unwrap();
+    s.exec(
+        "INSERT INTO workflow_stops VALUES (?,?)",
+        rusqlite::params![text(&child, "id"), now()],
+    )
+    .unwrap();
+    let root_task = text(&w["stop"]["targets"][0], "task_id");
+    // The managed stop already made these tasks terminal. Inject newly observed
+    // uncertainty without asking update to overwrite their terminal outcomes.
+    s.exec(
+        "UPDATE tasks SET state='uncertain' WHERE id=?",
+        [&root_task],
+    )
+    .unwrap();
+    assert_eq!(s.task(&root_task).unwrap()["state"], "uncertain");
+    let from_child =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":child["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &from_child).is_err());
+    s.exec(
+        "UPDATE tasks SET state='interrupted' WHERE id=?",
+        [&root_task],
+    )
+    .unwrap();
+    let grandchild = plugin::call(&s, "ses_test", "foreman_reconcile", &from_child).unwrap();
+    assert_eq!(grandchild["request"]["reconcile_root"], w["id"]);
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    // A newly observed reservation after admission must also prevent seeding.
+    s.exec("UPDATE tasks SET state='uncertain' WHERE id=?", [&task])
+        .unwrap();
+    assert_eq!(s.task(&task).unwrap()["state"], "uncertain");
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let grandchild = s.workflow(&text(&grandchild, "id")).unwrap();
+    assert_eq!(grandchild["state"], "blocked");
+    assert!(
+        !s.tasks(None)
+            .unwrap()
+            .iter()
+            .any(|t| t["request"]["workflow_id"] == grandchild["id"])
+    );
+}
+
 #[test]
 fn local_commit_preserves_unrelated_staged_bytes_after_an_applied_integration() {
     let tmp = tempfile::tempdir().unwrap();

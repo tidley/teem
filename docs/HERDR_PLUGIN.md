@@ -213,12 +213,21 @@ The Foreman can continue routine implementation and bounded corrections within a
 authorised issue without requesting the same approval again. Integration approval
 also covers necessary same-task reconciliation and its qualified successor. It
 does not authorise another issue, endless retries, publication, installation or
-deployment. Exhausted native workflows stay immutable; uncertain or active work
-must not be replaced. Integration and stop tools retain native approval gates.
+deployment. Exhausted and stopped native workflows stay immutable; uncertain or
+active work must not be replaced. Integration and stop tools retain native approval gates.
 
-Use `foreman_reconcile` with a new retained `workflow_id` and the terminal
-`source_workflow_id` to carry a ready or exhausted candidate into a fresh managed
-workflow. The project identity, task scope and acceptance criteria are inherited;
+Use `foreman_reconcile` with a new retained `workflow_id` and the
+`source_workflow_id` to carry a ready, exhausted or managed confirmed-stopped
+candidate into a fresh managed workflow. For stopped work, explicitly authorise
+the handoff first. The source must remain `blocked`, with `workflow_paused=true`
+and a `stopped` receipt, and retain a valid exact candidate snapshot and checkout.
+Queued, active or uncertain native tasks and unconfirmed task stops anywhere in
+the original task's continuation lineage reject the handoff, including siblings.
+A partial stop does not release running siblings. Pending/attempting/waiting or
+uncertain stops, arbitrary blocked/failed workflows and stopped workflows without
+a retained candidate are not eligible. The parent remains paused and unchanged;
+this does not resume its sessions, replay requests or forge a ready state.
+The project identity, task scope and acceptance criteria are inherited;
 the current project policy and clean source base are used. Active, uncertain,
 foreign and duplicate active continuations are rejected. Parent snapshots and
 review/check evidence remain unchanged. Each continuation has a dedicated worker

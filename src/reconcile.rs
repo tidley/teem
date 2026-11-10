@@ -11,10 +11,22 @@ use std::path::Path;
 fn candidate(s: &Store, f: &str, id: &str) -> Result<(Value, Value)> {
     let w = s.workflow(id)?;
     ensure!(w["foreman"] == f, "Candidate belongs to another Foreman");
+    let stopped = w["state"] == "blocked"
+        && w["stop"]["workflow_paused"] == true
+        && w["stop"]["state"] == "stopped";
     ensure!(
-        ["ready", "needs_attention"].contains(&text(&w, "state").as_str()),
-        "Only a terminal candidate can be reconciled; never replace active or uncertain work"
+        ["ready", "needs_attention"].contains(&text(&w, "state").as_str()) || stopped,
+        "Only a ready, exhausted or confirmed-stopped candidate can be reconciled; never replace active or uncertain work"
     );
+    if stopped {
+        let root = w["request"]["reconcile_root"].as_str().unwrap_or(id);
+        // Check native reservations, not workflow preparation state: seed runs
+        // while the admitted successor itself is preparing its first worker.
+        ensure!(
+            s.query("SELECT tasks.id FROM tasks JOIN workflows ON json_extract(tasks.request,'$.workflow_id')=workflows.id WHERE (workflows.id=? OR COALESCE(json_extract(workflows.request,'$.reconcile_root'),json_extract(workflows.request,'$.reconcile_from'))=?) AND (tasks.state IN ('queued','starting','accepted','running','uncertain') OR EXISTS (SELECT 1 FROM task_stops WHERE task_stops.task_id=tasks.id AND task_stops.state!='stopped'))", [root, root])?.is_empty(),
+            "Stopped candidate lineage still owns active or uncertain native tasks"
+        );
+    }
     ensure!(
         !s.tasks(Some(f))?
             .iter()
@@ -31,6 +43,17 @@ fn candidate(s: &Store, f: &str, id: &str) -> Result<(Value, Value)> {
         &text(&w, "base_revision"),
         &text(&r["snapshot"], "tree"),
     )?;
+    if stopped {
+        ensure!(
+            r["snapshot"]["base"] == w["base_revision"],
+            "Retained snapshot base changed"
+        );
+        validate_scope(
+            Path::new(&text(&r, "checkout")),
+            &w,
+            &text(&r["snapshot"], "tree"),
+        )?;
+    }
     Ok((w, r))
 }
 
@@ -99,6 +122,11 @@ pub fn seed(s: &Store, w: &Value, checkout: &Path) -> Result<Option<String>> {
         0o600,
     )?;
     let tree = checkouts::candidate_tree(checkout, &text(w, "base_revision"))?;
+    validate_scope(checkout, w, &tree)?;
+    Ok(Some(tree))
+}
+
+fn validate_scope(checkout: &Path, w: &Value, tree: &str) -> Result<()> {
     let names = git(
         checkout,
         &[
@@ -107,7 +135,7 @@ pub fn seed(s: &Store, w: &Value, checkout: &Path) -> Result<Option<String>> {
             "--no-renames",
             "-z",
             &text(w, "base_revision"),
-            &tree,
+            tree,
             "--",
         ],
         None,
@@ -122,5 +150,5 @@ pub fn seed(s: &Store, w: &Value, checkout: &Path) -> Result<Option<String>> {
             "Reconciled seed exceeds original scope"
         );
     }
-    Ok(Some(tree))
+    Ok(())
 }
