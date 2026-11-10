@@ -912,6 +912,11 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
     let profile = read_json(&root.join("examples/pilot-foreman.json")).unwrap();
     assert_eq!(profile["default_agent"], "teem_foreman");
     assert_eq!(profile["warming"], false);
+    assert!(
+        profile["agents"]["teem_foreman"].get("steps").is_none(),
+        "Do not cut off the Foreman before it can finish research and dispatch"
+    );
+    assert!(profile["agents"]["teem_foreman"].get("maxSteps").is_none());
     let permissions = array(&profile["agents"]["teem_foreman"]["permissions"]);
     assert_eq!(
         permissions[0],
