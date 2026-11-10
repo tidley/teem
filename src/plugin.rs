@@ -75,6 +75,39 @@ pub fn open(c: &Value) -> Result<Store> {
 pub fn tools() -> Value {
     serde_json::from_str(include_str!("tools.json")).unwrap()
 }
+fn dispatch_args(name: &str, args: &Value) -> Result<Value> {
+    let fields: &[&str] = match name {
+        "foreman_submit" => &["checkout", "revision", "scope", "prompt"],
+        "foreman_workflow" => &["scope", "prompt", "workers"],
+        _ => return Ok(args.clone()),
+    };
+    let mut result = args
+        .as_object()
+        .context("Arguments must be an object")?
+        .clone();
+    if let Some(assignment) = result.remove("assignment") {
+        let assignment = assignment
+            .as_object()
+            .context("Assignment must be an object")?;
+        ensure!(
+            !assignment.is_empty() && assignment.keys().all(|k| fields.contains(&k.as_str())),
+            "Use exactly documented assignment fields"
+        );
+        ensure!(
+            fields.iter().all(|k| !result.contains_key(*k)),
+            "Do not mix assignment with top-level assignment fields"
+        );
+        result.extend(assignment.clone());
+    }
+    ensure!(
+        fields
+            .iter()
+            .filter(|k| **k != "workers")
+            .all(|k| result.contains_key(*k)),
+        "Missing required assignment fields"
+    );
+    Ok(Value::Object(result))
+}
 pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
     let tools = tools();
     let def = tools
@@ -95,10 +128,10 @@ pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
         "Use exactly documented tool arguments"
     );
     match name {
-        "foreman_submit" => s.submit(f, args.clone()),
+        "foreman_submit" => s.submit(f, dispatch_args(name, args)?),
         "foreman_status" => s.status(f, args),
         "foreman_plan" => progress::set_plan(s, f, &args["items"]),
-        "foreman_workflow" => s.workflow_submit(f, args.clone()),
+        "foreman_workflow" => s.workflow_submit(f, dispatch_args(name, args)?),
         "foreman_integrate" => crate::operator::integrate(s, f, args),
         "foreman_color" => crate::operator::color(s, f, args),
         "foreman_stop" => crate::control::request(s, f, args),

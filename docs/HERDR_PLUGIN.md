@@ -106,6 +106,24 @@ The MCP tools appear with their own schemas and descriptions. They do not depend
 - `foreman_color`: set this bound Foreman's local accent using `project` and a six-digit hex `color`. No shell or restart is needed.
 - `foreman_stop`: after approval, durably pause a workflow and request interruption of its active native agents. An optional exact `task_id` selects one agent; the workflow still pauses, while already-running siblings are not interrupted.
 
+### Compact dispatch inputs
+
+Prefer nested `assignment` for new `foreman_workflow` calls: keep `workflow_id`,
+`project` and an optional short `title` at top level; put `scope`, the full `prompt`
+and optional `workers` inside `assignment`. For `foreman_submit`, keep `task_id`
+and `role` at top level and nest `checkout`, `revision`, `scope` and `prompt`.
+Never mix nested and top-level assignment fields, even with equal values.
+
+OpenCode's generic collapsed tool summary excludes objects/arrays, so the nested
+long inputs stay out of the default text and remain available by expanding the
+tool input. Equivalent forms normalize to the same immutable stored request;
+retain the same UUID for retries. Full inputs also remain available through
+`foreman_status` detail with the exact UUID and `pointer: "/request"`.
+Legacy top-level string callers remain supported but can still show long default
+text; existing history is not changed. No errors or human permission cards are
+hidden. This source change does not imply installation or live UI verification.
+See [examples, compatibility limits and local test coverage](ISSUE3_COMPACT_DISPATCH.md).
+
 ## Task ownership and stopping
 
 For factual progress reports, use `foreman_status` with `section=changes` and

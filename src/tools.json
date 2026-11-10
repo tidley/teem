@@ -1,7 +1,7 @@
 [
   {
     "name": "foreman_submit",
-    "description": "Queue one legacy headless task and return immediately. Legacy tasks share two slots per role; managed tasks have independent teams. Queue acceptance is not execution. Reviews require a clean, complete checkout at a fixed commit. Workers may use sparse checkouts, whose tests cannot qualify integration. Never retry with a new UUID after an uncertain response.",
+    "description": "Queue one legacy headless task and return immediately. Prefer assignment for checkout/revision/scope/prompt so default tool text stays compact; expand the tool input for full text. Legacy top-level fields remain accepted but may display long text; never mix the two forms. Legacy tasks share two slots per role; managed tasks have independent teams. Queue acceptance is not execution. Reviews require a clean, complete checkout at a fixed commit. Workers may use sparse checkouts, whose tests cannot qualify integration. Never retry with a new UUID after an uncertain response.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -15,6 +15,18 @@
             "worker",
             "reviewer"
           ]
+        },
+        "assignment": {
+          "type": "object",
+          "description": "Recommended compact form; full inputs remain available on expansion. Do not also supply top-level checkout/revision/scope/prompt.",
+          "properties": {
+            "checkout": { "type": "string", "description": "An explicitly authorised absolute Git checkout root" },
+            "revision": { "type": "string", "description": "Full Git commit ID matching checkout HEAD" },
+            "scope": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+            "prompt": { "type": "string", "description": "Bounded assignment, acceptance criteria, and required checks" }
+          },
+          "required": ["checkout", "revision", "scope", "prompt"],
+          "additionalProperties": false
         },
         "checkout": {
           "type": "string",
@@ -38,11 +50,14 @@
       },
       "required": [
         "task_id",
-        "role",
-        "checkout",
-        "revision",
-        "scope",
-        "prompt"
+        "role"
+      ],
+      "oneOf": [
+        {
+          "required": ["assignment"],
+          "not": { "anyOf": [ { "required": ["checkout"] }, { "required": ["revision"] }, { "required": ["scope"] }, { "required": ["prompt"] } ] }
+        },
+        { "required": ["checkout", "revision", "scope", "prompt"], "not": { "required": ["assignment"] } }
       ],
       "additionalProperties": false
     }
@@ -206,10 +221,34 @@
   },
   {
     "name": "foreman_workflow",
-    "description": "Delegate implementation, approved checks, two independent exact-snapshot reviews and bounded revisions. Use a project alias from foreman_status.projects and acceptance criteria. The supervisor chooses separate checkouts and base revisions; never ask the human for paths or hashes. No model override, arbitrary commands, commits, integration or publication. Optionally split a task into up to two workers with disjoint file scopes. Each task has its own two implementation and two review slots; additional tasks do not share them. Their combined candidate must pass checks and both reviews. Revisions use one worker on that candidate; stay within the user's authorised scope. Retain one UUID per immutable workflow, never replace uncertain work. The workflow appears automatically in passive progress. Do not call todowrite for Teem or wait/poll to update it. Finish your dispatch response so the human can keep talking. Progress and individual agent completions do not wake you. One final workflow outcome asks for a concise result summary, not checklist maintenance.",
+    "description": "Delegate implementation, approved checks, two independent exact-snapshot reviews and bounded revisions. Prefer assignment for scope/prompt/workers, with a short title, so default tool text stays compact; expand the tool input for full text. Legacy top-level fields remain accepted but may display long text; never mix the two forms. Use a project alias from foreman_status.projects and acceptance criteria. The supervisor chooses separate checkouts and base revisions; never ask the human for paths or hashes. No model override, arbitrary commands, commits, integration or publication. Optionally split a task into up to two workers with disjoint file scopes. Each task has its own two implementation and two review slots; additional tasks do not share them. Their combined candidate must pass checks and both reviews. Revisions use one worker on that candidate; stay within the user's authorised scope. Retain one UUID per immutable workflow, never replace uncertain work. The workflow appears automatically in passive progress. Do not call todowrite for Teem or wait/poll to update it. Finish your dispatch response so the human can keep talking. Progress and individual agent completions do not wake you. One final workflow outcome asks for a concise result summary, not checklist maintenance.",
     "inputSchema": {
       "type": "object",
       "properties": {
+        "assignment": {
+          "type": "object",
+          "description": "Recommended compact form; full inputs remain available on expansion. Do not also supply top-level scope/prompt/workers.",
+          "properties": {
+            "scope": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+            "prompt": { "type": "string" },
+            "workers": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 2,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "scope": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                  "prompt": { "type": "string" }
+                },
+                "required": ["scope", "prompt"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["scope", "prompt"],
+          "additionalProperties": false
+        },
         "workflow_id": {
           "type": "string"
         },
@@ -259,9 +298,14 @@
       },
       "required": [
         "workflow_id",
-        "project",
-        "scope",
-        "prompt"
+        "project"
+      ],
+      "oneOf": [
+        {
+          "required": ["assignment"],
+          "not": { "anyOf": [ { "required": ["scope"] }, { "required": ["prompt"] }, { "required": ["workers"] } ] }
+        },
+        { "required": ["scope", "prompt"], "not": { "required": ["assignment"] } }
       ],
       "additionalProperties": false
     }
