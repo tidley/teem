@@ -36,7 +36,7 @@ pub fn normalise_projects(v: &Value) -> Result<Value> {
                 .context("Project needs an absolute path")?,
         );
         ensure!(path.is_absolute(), "Project path must be absolute");
-        let max = p.get("max_revisions").cloned().unwrap_or(json!(1));
+        let max = p.get("max_revisions").cloned().unwrap_or(json!(3));
         ensure!(
             max.as_u64().is_some_and(|n| n <= 3),
             "Use zero to three revisions"

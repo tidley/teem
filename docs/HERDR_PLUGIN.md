@@ -194,7 +194,7 @@ source. Only explicitly configured projects can run managed work:
 ```toml
 [projects.pilot]
 path = "/absolute/project/root"
-max_revisions = 1
+max_revisions = 3
 
 [[projects.pilot.checks]]
 name = "tests"
@@ -206,6 +206,12 @@ output_limit = 1048576
 ```
 
 The operator must approve these commands and trust the project's test/build scripts.
+If omitted, `max_revisions` defaults to three. It permits one initial implementation
+plus three corrective implementation rounds, not three total attempts. Each new
+candidate must pass its approved checks and two exact-candidate reviews. An explicit
+value from zero to three overrides the default. Budgets are captured at admission;
+changing the project setting does not reopen exhausted workflows or replay uncertain,
+failed or interrupted native sessions. Preserved work needs an authorised follow-up.
 Commands use exact argv, not a shell. No model argument can choose a command, cwd,
 timeout or revision budget. Shell launchers and obvious publication/destructive
 executables are rejected. This does not make arbitrary test code safe: approved code

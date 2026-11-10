@@ -401,9 +401,20 @@ fn manual_plan_does_not_claim_verification_and_progress_has_no_model_calls() {
 }
 
 fn workflow_fixture(tmp: &Path, two: bool) -> (Store, Fake, Value) {
+    workflow_fixture_revisions(tmp, two, Some(1))
+}
+fn workflow_fixture_revisions(
+    tmp: &Path,
+    two: bool,
+    revisions: Option<u64>,
+) -> (Store, Fake, Value) {
     let p = tmp.join("source");
     repo(&p);
-    let policy=workflows::normalise_projects(&json!({"project":{"path":p,"max_revisions":1,"checks":[{"name":"tests","kind":"test","argv":["git","status","--porcelain"]}]}})).unwrap();
+    let mut config = json!({"project":{"path":p,"checks":[{"name":"tests","kind":"test","argv":["git","status","--porcelain"]}]}});
+    if let Some(n) = revisions {
+        config["project"]["max_revisions"] = json!(n);
+    }
+    let policy = workflows::normalise_projects(&config).unwrap();
     let s = store(tmp, &[], policy);
     let f = Fake {
         directory: p.to_str().unwrap().into(),
@@ -1570,6 +1581,82 @@ fn nonpassing_reviewer_forces_a_bounded_revision_with_new_ids() {
             .unwrap(),
         "changed\n"
     );
+}
+
+#[test]
+fn default_workflow_allows_three_corrections_with_fresh_checks_and_reviews() {
+    exercise_default_revisions(true);
+}
+
+#[test]
+fn default_workflow_stops_after_four_implementation_rounds_without_replay() {
+    exercise_default_revisions(false);
+}
+
+fn exercise_default_revisions(pass_last: bool) {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture_revisions(tmp.path(), false, None);
+    assert_eq!(w["policy"]["max_revisions"], 3);
+    let id = text(&w, "id");
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let mut workers = std::collections::BTreeSet::new();
+    let mut reviewers = std::collections::BTreeSet::new();
+    for round in 0..4 {
+        let w = s.workflow(&id).unwrap();
+        assert_eq!(w["state"], "working");
+        assert_eq!(w["round"], round);
+        let r = &w["data"]["rounds"][round];
+        assert!(workers.insert(text(r, "worker_id")));
+        finish_workers(&s);
+        workflows::tick(&s, &f, &mut runner).unwrap();
+        let w = s.workflow(&id).unwrap();
+        assert_eq!(w["state"], "checking");
+        await_receipt(&w["data"]["rounds"][round]["check_handle"]);
+        workflows::tick(&s, &f, &mut runner).unwrap();
+        let w = s.workflow(&id).unwrap();
+        assert_eq!(w["state"], "reviewing");
+        let r = &w["data"]["rounds"][round];
+        let ids = array(&r["review_ids"]);
+        assert_eq!(ids.len(), 2);
+        for reviewer in ids {
+            assert!(reviewers.insert(reviewer.as_str().unwrap().to_owned()));
+            let verdict = if round == 3 && pass_last {
+                "pass"
+            } else {
+                "changes_requested"
+            };
+            let findings = if verdict == "pass" {
+                json!([])
+            } else {
+                json!([{"path":"src/a","line":1,"message":"Fix demonstrated fixture issue"}])
+            };
+            s.update(
+                reviewer.as_str().unwrap(),
+                "succeeded",
+                &json!({"snapshot":r["snapshot"]["sha256"],"verdict":verdict,"findings":findings})
+                    .to_string(),
+                "",
+            )
+            .unwrap();
+        }
+        workflows::tick(&s, &f, &mut runner).unwrap();
+    }
+    let w = s.workflow(&id).unwrap();
+    assert_eq!(
+        w["state"],
+        if pass_last {
+            "ready"
+        } else {
+            "needs_attention"
+        }
+    );
+    assert_eq!(w["data"]["rounds"].as_array().unwrap().len(), 4);
+    assert_eq!(workers.len(), 4);
+    assert_eq!(reviewers.len(), 8);
+    let count = s.tasks(None).unwrap().len();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.tasks(None).unwrap().len(), count);
 }
 
 #[test]

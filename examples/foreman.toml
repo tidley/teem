@@ -11,7 +11,7 @@ allowed_checkouts = []
 # are approved for unattended execution as your user. No shell command text.
 # [projects.example]
 # path = "/absolute/project/root"
-# max_revisions = 1
+# max_revisions = 3 # One initial implementation plus up to three corrective rounds.
 # [[projects.example.checks]]
 # name = "tests"
 # kind = "test"
