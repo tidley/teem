@@ -186,13 +186,23 @@ changes into every new task. Select only the relevant changes for each handoff.
 
 ## Integration and routine local work
 
-The current example profile supports ordinary local edits. Shell commands and
-candidate integration require native approval; it cannot edit its own OpenCode
-configuration or Git metadata. Use the bounded color tool for appearance changes.
+The current example profile uses trusted Build-equivalent tool access, with the
+same explicit `browser` action denial as the inspected Build setup. Routine shell,
+file edits, external-directory access, research and review tools do not prompt.
+This includes Git status, remote refs, repository metadata, PR lists/details/checks,
+history, whitespace checks and help/version inspection. Use the bounded color tool
+for appearance changes.
 The profile permits local commits of verified authorised work through the native
 integration tool; publication, destructive actions and deployment still require
 separate user authorisation. Never use shell/API access to answer worker permission cards
-or to change Teem state. Edit permissions are not an OS sandbox.
+or to change Teem state. Configuration changes require an explicit user request.
+These are behavioural approval rules, not shell-enforced barriers or an OS sandbox.
+See [the durable Foreman policy and reinstall steps](FOREMAN_ACCESS.md).
+
+Worker shell access is separate. The opt-in `trusted_worker_shell` setting applies
+only to new dispatches and defaults to false; it does not change reviewers or
+existing sessions. It grants host-user shell authority, including writes outside
+built-in edit scopes. See [trusted worker mode and its limits](TRUSTED_WORKERS.md).
 
 Integration rechecks the patch digest, approved check receipts and both reviewers
 against the same candidate before writing source. Source must be clean and at
@@ -270,7 +280,8 @@ authorised issue without requesting the same approval again. Integration approva
 also covers necessary same-task reconciliation and its qualified successor. It
 does not authorise another issue, endless retries, publication, installation or
 deployment. Exhausted and stopped native workflows stay immutable; uncertain or
-active work must not be replaced. Integration and stop tools retain native approval gates.
+active work must not be replaced. Integration and stop still require user approval;
+the trusted Foreman profile does not enforce that requirement with native prompts.
 
 Use `foreman_reconcile` with a new retained `workflow_id` and the
 `source_workflow_id` to carry a ready, exhausted or managed confirmed-stopped

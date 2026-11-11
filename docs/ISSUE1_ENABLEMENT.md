@@ -31,7 +31,8 @@ legacy compatibility, not authenticated native chat context.
 ## Behavior and boundaries
 
 Enablement performs an exact `GET /api/session/ID`, requiring a top-level session
-(`parentID: null`), native agent, project ID and absolute directory. The TUI's
+(`parentID` omitted or null), native agent, project ID and absolute directory. A
+non-null parent still rejects child/worker chats. The TUI's
 identity must agree with that read, and Herdr must identify the same session and
 a nonempty terminal. Missing identity, model, runtime or project policy fails
 visibly. Repeating enablement preserves the binding and updates only captured
@@ -62,6 +63,13 @@ explicit authorised issue and the existing enabled supervisor/policy.
 
 ## Verification and qualification
 
+The TUI adapter uses the host SDK's callable `router.current()` and
+`model.current()` accessors. `keymap.layer` takes a pure factory and returns no
+disposer; the host removes that layer when the plugin deactivates. Tests use
+those exact API shapes, rather than property-shaped stand-ins. A setup failure
+can leave `/teem enable` as plain chat text instead of running the TUI command;
+check plugin errors before treating a model reply as an enablement receipt.
+
 `tests/issue1_enable.rs` uses temporary directories/repositories, fake native
 transports, a local HTTP server and the native Rust Herdr subprocess fixture.
 The approved Bun entry `ui/teem-progress/progress.test.mjs` includes enable-command,
@@ -69,7 +77,19 @@ model/navigation, origin-bound repeated success/error, trusted tool context,
 disposal and bridge-error tests. Run the four root checks in the plugin guide
 against the exact candidate, followed by both independent reviews.
 
-These source fixtures do not prove live host compatibility. TUI/server loading,
-actual slash argument delivery, real Herdr/native identity availability and model
-selector behavior still require an authorised live qualification. No paid model
-call, installation, service activation or host qualification is claimed here.
+### Local acceptance evidence
+
+On 2026-11-11 the operator verified active server and TUI plugin features, eight
+native tools without legacy submission, and actual native enablement/status in
+the intended Herdr chat. Enablement verified the native and Herdr identities,
+returned `enabled=true` and `started=false`, and left task, workflow, event and
+approval counts unchanged. The user subsequently confirmed the live TUI showed
+`Teem enabled` and the current-work result. Private session and terminal IDs are
+not needed in this public acceptance record.
+
+Automated tests cover callable router/model accessors, the keymap factory and
+host-owned cleanup, omitted/null top-level parent IDs, repeated enablement,
+model inheritance, child rejection and project boundaries. The operator did not
+inject terminal keystrokes to exercise the slash handler end to end; native
+enablement/status were exercised directly. A visible enabled banner alone is
+not proof that every slash-command path or a different host version works.

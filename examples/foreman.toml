@@ -1,6 +1,10 @@
 # Copy to the directory printed by `herdr plugin config-dir local.teem`.
 # Explicitly authorise checkout roots and execution scope before enabling the service.
 enabled = false
+# Optional isolated-dev-machine mode; worker shell has host-user authority,
+# including writes outside built-in edit scopes. See docs/TRUSTED_WORKERS.md.
+# Pinned at dispatch. Existing worker sessions and reviewer permissions do not change.
+trusted_worker_shell = false
 state_dir = "~/.local/state/teem"
 registry = "~/.local/state/opencode/service.json"
 # Legacy task fallback only; new workers/reviewers inherit the native Foreman model.

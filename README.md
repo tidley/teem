@@ -86,8 +86,10 @@ The supervisor never automatically integrates, merges, pushes, deploys or replay
 After user approval, `foreman_integrate` can apply an exact verified candidate to
 its original clean source, or verify and record its integration commit. It never
 commits or publishes. Shared status and the sidebar show integration receipts.
-The Foreman profile permits routine local edits, asks before shell commands and
-integration, and protects its own permissions/MCP configuration. `foreman_color`
+The Foreman profile uses trusted Build-equivalent tool access without routine
+shell or directory prompts. Publication, integration and destructive operations
+still need user authorisation through instructions, not tool-level barriers.
+See [Foreman access and reinstall policy](docs/FOREMAN_ACCESS.md). `foreman_color`
 changes only its local accent without needing shell access.
 The Foreman assigns a separate workflow and at least one dedicated worker to
 each distinct task or issue; independent tasks may run in parallel. After user

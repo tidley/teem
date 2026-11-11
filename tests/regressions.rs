@@ -926,53 +926,23 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
         "teem_foreman_reconcile",
         "Local commits of verified authorised work are permitted",
         "continue only already-authorised work",
+        "trusted Build-equivalent tool access",
+        "Git status, remote refs, repository metadata, open PRs, PR details/checks, history, whitespace checks",
+        "ngit --help",
+        "Approval for one publication is not standing publication authority",
+        "These are behavioural approval rules, not shell-enforced barriers",
     ] {
         assert!(
             instruction.contains(rule),
             "Missing task ownership rule: {rule}"
         );
     }
-    let permissions = array(&profile["agents"]["teem_foreman"]["permissions"]);
     assert_eq!(
-        permissions[0],
-        json!({"action":"*","resource":"*","effect":"deny"})
+        profile["agents"]["teem_foreman"]["permissions"],
+        json!([
+            {"action":"*","resource":"*","effect":"allow"},
+            {"action":"browser","resource":"*","effect":"deny"}
+        ]),
+        "Foreman matches trusted Build access; avoid restoring per-command or directory gates"
     );
-    assert!(!permissions.iter().any(|p| {
-        ["shell", "subagent", "execute"].contains(&text(p, "action").as_str())
-            && p["effect"] == "allow"
-    }));
-    for (action, effect) in [
-        ("shell", "ask"),
-        ("edit", "allow"),
-        ("teem_foreman_integrate", "ask"),
-        ("teem_foreman_stop", "ask"),
-        ("teem_foreman_color", "allow"),
-        ("teem_foreman_reconcile", "allow"),
-    ] {
-        assert!(
-            permissions
-                .iter()
-                .any(|p| p["action"] == action && p["effect"] == effect)
-        );
-    }
-    assert!(permissions.iter().any(|p| p["action"] == "edit"
-        && p["resource"] == "**/opencode.json"
-        && p["effect"] == "deny"));
-    // OpenCode uses project-relative resources and '*' wildcards, not globstar:
-    // '**/opencode.json' does not match the root-level 'opencode.json'.
-    for resource in [
-        "opencode.json",
-        "opencode.jsonc",
-        ".git",
-        ".git/*",
-        ".opencode",
-        ".opencode/*",
-    ] {
-        assert!(
-            permissions.iter().any(|p| p["action"] == "edit"
-                && p["resource"] == resource
-                && p["effect"] == "deny"),
-            "Missing root protection for {resource}"
-        );
-    }
 }

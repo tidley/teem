@@ -15,7 +15,7 @@ fn native(r: &dyn Runtime, id: &str) -> Result<Value> {
     let response = r.request("GET", &format!("/api/session/{id}"), None)?;
     let s = response.get("data").unwrap_or(&response);
     ensure!(
-        s["id"] == id && s.get("parentID") == Some(&Value::Null),
+        s["id"] == id && s["parentID"].is_null(),
         "Enable only the exact top-level chat, not a worker or child session"
     );
     for key in ["agent", "projectID"] {

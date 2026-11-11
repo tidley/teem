@@ -33,6 +33,13 @@ pub fn load(path: &Path) -> Result<Value> {
         c["enabled"].is_boolean(),
         "Configuration enabled must be true or false"
     );
+    if c.get("trusted_worker_shell").is_none() {
+        c["trusted_worker_shell"] = json!(false);
+    }
+    ensure!(
+        c["trusted_worker_shell"].is_boolean(),
+        "Configuration trusted_worker_shell must be true or false"
+    );
     let state = expand(
         c["state_dir"]
             .as_str()
@@ -62,7 +69,7 @@ pub fn load(path: &Path) -> Result<Value> {
     Ok(c)
 }
 pub fn open(c: &Value) -> Result<Store> {
-    Store::open(
+    let mut store = Store::open(
         Path::new(&text(c, "state_dir")),
         &array(&c["allowed_checkouts"])
             .iter()
@@ -70,7 +77,9 @@ pub fn open(c: &Value) -> Result<Store> {
             .map(str::to_owned)
             .collect::<Vec<_>>(),
         c["projects"].clone(),
-    )
+    )?;
+    store.trusted_worker_shell = c["trusted_worker_shell"] == true;
+    Ok(store)
 }
 pub fn tools() -> Value {
     serde_json::from_str(include_str!("tools.json")).unwrap()
@@ -322,6 +331,7 @@ pub fn serve(path: &Path, initial: &Value) -> Result<()> {
                 return Ok(());
             }
             s.projects = c["projects"].clone();
+            s.trusted_worker_shell = c["trusted_worker_shell"] == true;
             s.allowed = array(&c["allowed_checkouts"])
                 .iter()
                 .map(|v| {

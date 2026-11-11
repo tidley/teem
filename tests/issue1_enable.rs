@@ -129,6 +129,8 @@ fn missing_or_changed_native_identity_herdr_policy_and_model_fail_without_bindin
     for (pointer, value) in [
         ("/id", json!("ses_other")),
         ("/parentID", json!("ses_parent")),
+        ("/parentID", json!("")),
+        ("/parentID", json!(false)),
         ("/agent", Value::Null),
         ("/projectID", Value::Null),
         ("/location/directory", json!("relative")),
@@ -139,10 +141,6 @@ fn missing_or_changed_native_identity_herdr_policy_and_model_fail_without_bindin
         *f.native.session.borrow_mut() = changed;
         assert!(enable::enable(&f.store, &f.native, &f.request(), &f.herdr()).is_err());
     }
-    let mut missing_parent = original.clone();
-    missing_parent.as_object_mut().unwrap().remove("parentID");
-    *f.native.session.borrow_mut() = missing_parent;
-    assert!(enable::enable(&f.store, &f.native, &f.request(), &f.herdr()).is_err());
     *f.native.session.borrow_mut() = original;
     for (pointer, value) in [
         ("/result/agent/agent_session/value", json!("ses_other")),
@@ -171,6 +169,29 @@ fn missing_or_changed_native_identity_herdr_policy_and_model_fail_without_bindin
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn top_level_native_chat_can_omit_optional_parent_id() {
+    for enveloped in [false, true] {
+        let f = Fixture::new();
+        f.native
+            .session
+            .borrow_mut()
+            .as_object_mut()
+            .unwrap()
+            .remove("parentID");
+        if enveloped {
+            let session = f.native.session.borrow().clone();
+            *f.native.session.borrow_mut() = json!({"data":session});
+        }
+        assert_eq!(f.enable()["started"], false);
+        assert!(
+            f.call("foreman_status", &json!({"section":"projects","limit":2}))
+                .is_ok()
+        );
+        assert!(f.store.tasks(None).unwrap().is_empty());
+    }
 }
 
 #[test]
