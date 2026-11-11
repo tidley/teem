@@ -205,7 +205,7 @@ test('repeated matching leading references are removed from every child kind onl
   const group = selectedItems(items).groups[0]
   expect(group.title).toBe(`${issue} Cleanup`)
   expect(group.rows.map(r => r.content)).toEqual([
-    'Implementation · running', 'Tests · passed', 'Review · verdict pending',
+    'Implementation · running', 'Tests · passed', 'Review · Awaiting review',
     'Reported: Inspect changes', 'Worker attribution — failed; inspect full evidence',
   ])
 })
@@ -313,7 +313,7 @@ test('compact rows show a workflow title/project once and short check/review lab
   expect(group.title).toBe('Compact sidebar')
   expect(group.description).toContain('teem')
   expect(group.rows.map(r => r.content)).toEqual([
-    'Tests · passed', 'Format · pending (batch)', 'Clippy · failed', 'Review · correctness · changes requested',
+    'Tests · passed', 'Format · Awaiting result', 'Clippy · failed', 'Review · correctness · changes requested',
   ])
   expect(group.rows[1].status).toBe('pending')
   expect(group.rows.every(r => !r.content.includes(h.label))).toBe(true)
@@ -351,12 +351,58 @@ test('configured Rust and adapter checks use compact labels without implying bat
   const items = [h, ...names.map((name, index) => row(h, `check-${index}`, name,
     'pending', 'check batch active; individual result pending', 'check'))]
   const group = selectedItems(items).groups[0]
+  expect(group.state).toBe('Running checks')
   expect(group.rows.map(r => r.content)).toEqual([
-    'Tests · pending (batch)', 'Format · pending (batch)', 'Clippy · pending (batch)',
-    'UI tests · pending (batch)', 'custom-inspection · pending (batch)',
+    'Tests · Awaiting result', 'Format · Awaiting result', 'Clippy · Awaiting result',
+    'UI tests · Awaiting result', 'custom-inspection · Awaiting result',
   ])
   expect(group.rows.every(r => r.status === 'pending')).toBe(true)
   expect(selectedItems(items).todos.map(t => t.content)).toEqual(items.map(i => i.content))
+})
+
+test('submission, execution and unavailable results remain distinct display observations', () => {
+  const h = { ...heading(), issue: 'tidley/teem#14' }
+  const items = [h,
+    row(h, 'submitted', 'Implementation', 'in_progress', 'native input accepted', 'implementation', { task_id: 'submitted-task', task_state: 'accepted' }),
+    row(h, 'running', 'Implementation 2', 'in_progress', 'running', 'implementation', { task_id: 'running-task', task_state: 'running' }),
+    row(h, 'awaiting', 'Tests', 'in_progress', 'check batch active; individual result pending', 'check'),
+    row(h, 'passed', 'Format', 'completed', 'passed (exit 0)', 'check'),
+    row(h, 'review', 'Review · correctness', 'in_progress', 'execution finished; verdict pending', 'review', { task_id: 'review-task', task_state: 'succeeded' }),
+  ]
+  const before = structuredClone(items)
+  const selected = selectedItems(items)
+  const group = selected.groups[0]
+  expect(group).toMatchObject({ id: h.workflow_id, title: 'tidley/teem#14 Compact sidebar', state: 'Running checks' })
+  expect(group.rows.map(r => [r.id, r.content, r.status])).toEqual([
+    ['submitted', 'Implementation · Submitted', 'in_progress'],
+    ['running', 'Implementation 2 · running', 'in_progress'],
+    ['awaiting', 'Tests · Awaiting result', 'pending'],
+    ['passed', 'Format · passed', 'completed'],
+    ['review', 'Review · correctness · Awaiting review', 'in_progress'],
+  ])
+  expect(selected.todos).toEqual(items.map(({ content, status }) => ({ content, status })))
+  expect(items).toEqual(before)
+})
+
+test('ordinary pending, approval, uncertainty and ready receipt labels stay unchanged', () => {
+  const h = { ...heading(), workflow_state: 'uncertain' }
+  const items = [h,
+    row(h, 'pending', 'Review', 'pending', 'not started', 'review'),
+    row(h, 'approval', 'Implementation', 'in_progress', 'waiting for human approval or answer', 'implementation'),
+    row(h, 'uncertain', 'Implementation 2', 'in_progress', 'uncertain; no replacement started', 'implementation'),
+  ]
+  const receipt = { workflow_id: 'earlier', state: 'ready', title: 'Earlier work', content: 'Ready · not integrated' }
+  const before = structuredClone({ items, receipt })
+  const selected = selectedItems(items, { latest_result: receipt })
+  expect(selected.groups[0].state).toBe('blocked: uncertain')
+  expect(selected.groups[0].rows.map(r => [r.content, r.status])).toEqual([
+    ['Review · pending', 'pending'],
+    ['Implementation · blocked: approval', 'in_progress'],
+    ['Implementation 2 · blocked: uncertain', 'in_progress'],
+  ])
+  expect(selected.latest_result).toEqual(receipt)
+  expect(selected.todos).toEqual(items.map(({ content, status }) => ({ content, status })))
+  expect({ items, receipt }).toEqual(before)
 })
 
 test('long and multibyte titles/claims are bounded without splitting surrogate pairs', () => {
@@ -419,7 +465,7 @@ test('pending verdict, stopped batch and unknown future states do not imply a pa
   ]).groups[0]
   expect(group.state).toBe('unknown state')
   expect(group.rows.map(r => r.content)).toEqual([
-    'Review · tests/scope · verdict pending', 'Tests · not run', 'Implementation · blocked: uncertain',
+    'Review · tests/scope · Awaiting review', 'Tests · not run', 'Implementation · blocked: uncertain',
   ])
   expect(group.rows.every(r => r.status !== 'completed')).toBe(true)
 })

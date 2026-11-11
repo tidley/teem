@@ -16,7 +16,7 @@ const withoutIssue = (issue, text) => {
 }
 const withIssue = (issue, text) => issue ? `${issue} ${withoutIssue(issue, text)}` : text
 const workflowStates = new Map(Object.entries({ queued: 'queued', preparing: 'preparing', working: 'implementation',
-  snapshotting: 'snapshotting', checking: 'check batch', review_preparing: 'preparing reviews',
+  snapshotting: 'snapshotting', checking: 'Running checks', review_preparing: 'preparing reviews',
   reviewing: 'reviews', uncertain: 'blocked: uncertain' }))
 const checkNames = new Map(Object.entries({ test: 'Tests', tests: 'Tests', 'rust-tests': 'Tests',
   fmt: 'Format', format: 'Format', 'rust-format': 'Format', clippy: 'Clippy', 'rust-clippy': 'Clippy', 'tui-tests': 'UI tests' }))
@@ -108,9 +108,9 @@ export function sidebarGroups(progress) {
     if (kind === 'check') name = checkNames.get(name.toLowerCase()) ?? name
     let state = ({ pending: 'pending', in_progress: 'active', completed: 'passed', cancelled: 'cancelled' })[item.status]
     let status = item.status
-    if (detail.includes('individual result pending')) { state = 'pending (batch)'; status = 'pending' }
+    if (detail.includes('individual result pending')) { state = 'Awaiting result'; status = 'pending' }
     else if (detail.includes('not run;')) state = 'not run'
-    else if (detail.includes('verdict pending')) state = 'verdict pending'
+    else if (detail.includes('verdict pending')) state = 'Awaiting review'
     else if (detail.includes('changes requested')) state = 'changes requested'
     else if (detail.includes('failed')) state = 'failed'
     else if (detail.includes('human approval')) state = 'blocked: approval'
@@ -118,7 +118,7 @@ export function sidebarGroups(progress) {
     else if (detail === 'running') state = 'running'
     else if (detail === 'queued') state = 'queued'
     else if (detail === 'starting') state = 'starting'
-    else if (detail === 'native input accepted') state = 'accepted'
+    else if (detail === 'native input accepted') state = 'Submitted'
     else if (detail === 'interrupted') state = 'interrupted'
     group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: `${short(withoutIssue(group.issue, name), 28)} · ${state}`, status })
   })
