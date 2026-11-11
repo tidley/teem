@@ -11,11 +11,21 @@ allowed_checkouts = []
 # are approved for unattended execution as your user. No shell command text.
 # [projects.example]
 # path = "/absolute/project/root"
-# max_revisions = 1
+# max_revisions = 3 # One initial implementation plus up to three corrective rounds.
 # [[projects.example.checks]]
 # name = "tests"
 # kind = "test"
 # argv = ["cargo", "test", "--locked"]
 # cwd = "."
 # timeout = 300
+# output_limit = 1048576
+# Optional exact inspection, in addition to the required test check. Operator opt-in
+# only: workers defer recorded checks to the supervisor; this grants no shell access.
+# HEAD includes both staged and unstaged tracked changes, unlike plain diff --check.
+# [[projects.example.checks]]
+# name = "whitespace"
+# kind = "inspect"
+# argv = ["git", "diff", "--check", "HEAD", "--"]
+# cwd = "."
+# timeout = 30
 # output_limit = 1048576

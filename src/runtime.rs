@@ -140,6 +140,16 @@ pub fn prompt_text(t: &Value) -> String {
     )
 }
 pub fn event_payload(e: &Value) -> Result<Value> {
+    let mut payload = legacy_event_payload(e)?;
+    payload["text"] = json!(format!(
+        "{} Status retrieval: use this workflow_id or task_id; default status is a bounded summary. Read actual check results, both exact-candidate verdicts and unresolved findings/limitations. Follow marked truncations/missing rows with section pagination or mode=detail and JSON pointer, then next_offset chunks. Never claim success or acknowledge unseen evidence from a returned file path. If output is inaccessible, retry a narrower section/smaller limit; otherwise report the blocker without ack. Do not broaden directory permissions. Execution success is not review approval; ready is candidate qualification. Later integration receipts take precedence over historical candidate details; integration does not verify publication or runtime. Only acknowledge after consuming the relevant readable outcome.",
+        text(&payload, "text")
+    ));
+    Ok(payload)
+}
+
+// Exact old payloads remain valid receipts. Never resend or rewrite old inputs.
+fn legacy_event_payload(e: &Value) -> Result<Value> {
     let id = uuid(&text(e, "request_id"))?.simple().to_string();
     let event = text(e, "id");
     if let Some(workflow) = e["workflow_id"].as_str() {
@@ -164,7 +174,8 @@ fn validate_event(e: &Value, m: &Value, queued: bool) -> Result<()> {
         m["id"] == expected["id"]
             && m["type"] == "synthetic"
             && (!queued || m["sessionID"] == e["foreman"])
-            && body["text"] == expected["text"]
+            && (body["text"] == expected["text"]
+                || body["text"] == legacy_event_payload(e)?["text"])
             && body["metadata"] == expected["metadata"],
         "Native completion input mismatch"
     );
@@ -172,6 +183,33 @@ fn validate_event(e: &Value, m: &Value, queued: bool) -> Result<()> {
 }
 pub trait Runtime {
     fn request(&self, method: &str, path: &str, payload: Option<&Value>) -> Result<Value>;
+    fn is_stopped(&self, t: &Value) -> Result<bool> {
+        let prefix = format!("/api/session/{}", text(t, "session_id"));
+        let session = self.request("GET", &prefix, None)?;
+        validate_session(t, &session, &self.default_model())?;
+        let active = self.request("GET", "/api/session/active", None)?;
+        ensure!(active.is_object(), "Invalid native activity response");
+        let inbox = self.request("GET", &format!("{prefix}/inbox"), None)?;
+        let inbox = inbox.as_array().context("Invalid native inbox")?;
+        if active.get(text(t, "session_id")).is_some() || !inbox.is_empty() {
+            return Ok(false);
+        }
+        // A queued input may have been consumed between the first two reads.
+        let active = self.request("GET", "/api/session/active", None)?;
+        ensure!(active.is_object(), "Invalid native activity response");
+        Ok(active.get(text(t, "session_id")).is_none())
+    }
+    fn interrupt(&self, t: &Value) -> Result<()> {
+        let prefix = format!("/api/session/{}", text(t, "session_id"));
+        let session = self.request("GET", &prefix, None)?;
+        validate_session(t, &session, &self.default_model())?;
+        let result = self.request("POST", &format!("{prefix}/interrupt"), None)?;
+        ensure!(
+            result["interrupted"].is_boolean(),
+            "Native interrupt admission is unconfirmed"
+        );
+        Ok(())
+    }
     fn default_model(&self) -> Value {
         Value::Null
     }
@@ -438,6 +476,18 @@ impl Runtime for OpenCode {
                 format!("{}{path}", self.url),
             )
             .basic_auth("opencode", Some(&self.password));
+        // Admission can wait behind shared-server load. This is only the HTTP
+        // admission deadline, not an execution budget or permission to retry.
+        // Keep observations, interrupts and permission replies at ten seconds.
+        if method == "POST"
+            && (path == "/api/session"
+                || path
+                    .strip_prefix("/api/session/")
+                    .and_then(|p| p.strip_suffix("/prompt"))
+                    .is_some_and(|id| safe_id(id, "ses_")))
+        {
+            req = req.timeout(Duration::from_secs(60));
+        }
         if let Some(p) = payload {
             req = req.json(p);
         }
@@ -462,6 +512,13 @@ impl Runtime for OpenCode {
         ensure!(bytes.len() <= 1048576, "OpenCode response too large");
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|_| anyhow::anyhow!("Invalid OpenCode response"))?;
+        if method == "POST" && path.ends_with("/interrupt") {
+            ensure!(
+                value["interrupted"].is_boolean(),
+                "Invalid native interrupt response"
+            );
+            return Ok(value);
+        }
         Ok(value
             .get("data")
             .context("Invalid OpenCode response envelope")?
@@ -509,8 +566,36 @@ pub fn tick(store: &Store, runtime: &dyn Runtime) -> Result<()> {
             continue;
         }
         let result = (|| -> Result<()> {
-            let task = store.record_model(&text(&t, "id"), &runtime.dispatch_model(&t)?)?;
+            let task = store.record_model(
+                &text(&t, "id"),
+                &crate::enable::dispatch_model(store, runtime, &t)?,
+            )?;
+            if let Some(w) = task["request"]["workflow_id"].as_str() {
+                if crate::control::paused(store, w)? {
+                    store.update(
+                        &text(&t, "id"),
+                        "interrupted",
+                        "",
+                        "Stopped before native session creation",
+                    )?;
+                    return Ok(());
+                }
+            }
             runtime.create(&task)?;
+            // Hold admission serialization through HTTP, without rolling back
+            // the durable starting reservation on an unknown response.
+            let _guard = crate::control::admission_guard(store)?;
+            if let Some(w) = task["request"]["workflow_id"].as_str() {
+                if crate::control::paused(store, w)? {
+                    store.update(
+                        &text(&t, "id"),
+                        "interrupted",
+                        "",
+                        "Stopped before native input admission; native session retained",
+                    )?;
+                    return Ok(());
+                }
+            }
             runtime.prompt(&task)?;
             Ok(())
         })();

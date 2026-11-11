@@ -146,12 +146,36 @@ fn reconcile(s: &Store, r: &dyn Runtime, t: &Value, row: &Value, current: &[Valu
             "Worker request changed before reply. No reply sent",
         );
     }
-    update(
-        s,
-        row,
-        "replying",
-        "Human answer recorded; native reply outcome not yet known",
-    )?;
+    // Keep stop creation serialized with admission while committing the attempt
+    // before HTTP. A crash cannot roll it back and cause a duplicate reply.
+    let _guard = crate::control::admission_guard(s)?;
+    let allowed = s.transaction(|| {
+        if !s
+            .query(
+                "SELECT task_id FROM task_stops WHERE task_id=?",
+                [text(t, "id")],
+            )?
+            .is_empty()
+        {
+            update(
+                s,
+                row,
+                "stale",
+                "Worker stop committed; no permission reply sent",
+            )?;
+            return Ok(false);
+        }
+        update(
+            s,
+            row,
+            "replying",
+            "Human answer recorded; native reply outcome not yet known",
+        )?;
+        Ok(true)
+    })?;
+    if !allowed {
+        return Ok(());
+    }
     r.request(
         "POST",
         &format!(
@@ -176,7 +200,13 @@ pub fn deliver(s: &Store, r: &dyn Runtime) -> Result<()> {
     for t in s.tasks(None)? {
         let outcome = (|| -> Result<()> {
             s.binding(&text(&t, "foreman"))?;
-            let current = if LIVE.contains(&text(&t, "state").as_str()) {
+            let current = if LIVE.contains(&text(&t, "state").as_str())
+                && s.query(
+                    "SELECT task_id FROM task_stops WHERE task_id=?",
+                    [text(&t, "id")],
+                )?
+                .is_empty()
+            {
                 r.approvals(&t)?
             } else {
                 vec![]

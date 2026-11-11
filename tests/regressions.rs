@@ -912,6 +912,26 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
     let profile = read_json(&root.join("examples/pilot-foreman.json")).unwrap();
     assert_eq!(profile["default_agent"], "teem_foreman");
     assert_eq!(profile["warming"], false);
+    assert!(
+        profile["agents"]["teem_foreman"].get("steps").is_none(),
+        "Do not cut off the Foreman before it can finish research and dispatch"
+    );
+    assert!(profile["agents"]["teem_foreman"].get("maxSteps").is_none());
+    let instruction = text(&profile["agents"]["teem_foreman"], "system");
+    for rule in [
+        "Each distinct user task or issue gets its own workflow",
+        "at least one dedicated implementation worker",
+        "Do not bundle separate tasks or issues into a catch-all workflow",
+        "explicit stop/handoff approval",
+        "teem_foreman_reconcile",
+        "Local commits of verified authorised work are permitted",
+        "continue only already-authorised work",
+    ] {
+        assert!(
+            instruction.contains(rule),
+            "Missing task ownership rule: {rule}"
+        );
+    }
     let permissions = array(&profile["agents"]["teem_foreman"]["permissions"]);
     assert_eq!(
         permissions[0],
@@ -925,7 +945,9 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
         ("shell", "ask"),
         ("edit", "allow"),
         ("teem_foreman_integrate", "ask"),
+        ("teem_foreman_stop", "ask"),
         ("teem_foreman_color", "allow"),
+        ("teem_foreman_reconcile", "allow"),
     ] {
         assert!(
             permissions

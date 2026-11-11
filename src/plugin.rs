@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{BufRead, Write},
+    io::{BufRead, Read, Write},
     os::fd::AsRawFd,
     path::{Path, PathBuf},
     process::Command,
@@ -75,6 +75,39 @@ pub fn open(c: &Value) -> Result<Store> {
 pub fn tools() -> Value {
     serde_json::from_str(include_str!("tools.json")).unwrap()
 }
+fn dispatch_args(name: &str, args: &Value) -> Result<Value> {
+    let fields: &[&str] = match name {
+        "foreman_submit" => &["checkout", "revision", "scope", "prompt"],
+        "foreman_workflow" => &["scope", "prompt", "workers"],
+        _ => return Ok(args.clone()),
+    };
+    let mut result = args
+        .as_object()
+        .context("Arguments must be an object")?
+        .clone();
+    if let Some(assignment) = result.remove("assignment") {
+        let assignment = assignment
+            .as_object()
+            .context("Assignment must be an object")?;
+        ensure!(
+            !assignment.is_empty() && assignment.keys().all(|k| fields.contains(&k.as_str())),
+            "Use exactly documented assignment fields"
+        );
+        ensure!(
+            fields.iter().all(|k| !result.contains_key(*k)),
+            "Do not mix assignment with top-level assignment fields"
+        );
+        result.extend(assignment.clone());
+    }
+    ensure!(
+        fields
+            .iter()
+            .filter(|k| **k != "workers")
+            .all(|k| result.contains_key(*k)),
+        "Missing required assignment fields"
+    );
+    Ok(Value::Object(result))
+}
 pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
     let tools = tools();
     let def = tools
@@ -95,12 +128,14 @@ pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
         "Use exactly documented tool arguments"
     );
     match name {
-        "foreman_submit" => s.submit(f, args.clone()),
+        "foreman_submit" => s.submit(f, dispatch_args(name, args)?),
         "foreman_status" => s.status(f, args),
         "foreman_plan" => progress::set_plan(s, f, &args["items"]),
-        "foreman_workflow" => s.workflow_submit(f, args.clone()),
+        "foreman_workflow" => s.workflow_submit(f, dispatch_args(name, args)?),
         "foreman_integrate" => crate::operator::integrate(s, f, args),
         "foreman_color" => crate::operator::color(s, f, args),
+        "foreman_stop" => crate::control::request(s, f, args),
+        "foreman_reconcile" => crate::reconcile::submit(s, f, args),
         "foreman_ack" => {
             s.ack(f, args["event_id"].as_str().context("Invalid event ID")?)?;
             Ok(json!({"acknowledged":true}))
@@ -108,7 +143,16 @@ pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
         _ => bail!("Unknown tool"),
     }
 }
-pub fn mcp(s: &Store, f: &str, mut input: impl BufRead, mut output: impl Write) -> Result<()> {
+pub fn mcp(s: &Store, f: &str, input: impl BufRead, output: impl Write) -> Result<()> {
+    mcp_configured(s, f, input, output, None)
+}
+fn mcp_configured(
+    s: &Store,
+    f: &str,
+    mut input: impl BufRead,
+    mut output: impl Write,
+    config: Option<&Path>,
+) -> Result<()> {
     s.binding(f)?;
     loop {
         let mut line = Vec::new();
@@ -154,14 +198,25 @@ pub fn mcp(s: &Store, f: &str, mut input: impl BufRead, mut output: impl Write) 
                     "ping" => json!({}),
                     "tools/list" => json!({"tools":tools()}),
                     "tools/call" => {
-                        match call(
-                            s,
-                            f,
-                            &text(&params, "name"),
-                            params.get("arguments").unwrap_or(&json!({})),
-                        ) {
+                        let result = (|| {
+                            let fresh = config
+                                .map(|path| load(path).and_then(|c| open(&c)))
+                                .transpose()?;
+                            call(
+                                fresh.as_ref().unwrap_or(s),
+                                f,
+                                &text(&params, "name"),
+                                params.get("arguments").unwrap_or(&json!({})),
+                            )
+                        })();
+                        match result {
                             Ok(data) => {
-                                json!({"content":[{"type":"text","text":serde_json::to_string(&data)?}]})
+                                let rendered = if text(&params, "name") == "foreman_status" {
+                                    serde_json::to_string_pretty(&data)?
+                                } else {
+                                    serde_json::to_string(&data)?
+                                };
+                                json!({"content":[{"type":"text","text":rendered}]})
                             }
                             Err(e) => {
                                 json!({"isError":true,"content":[{"type":"text","text":e.to_string()}]})
@@ -207,7 +262,7 @@ pub fn service_unit(config: &Path) -> Result<String> {
         "[Unit]\nDescription=Teem headless task supervisor\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={exe} --config {cfg} serve\nRestart=on-failure\nRestartSec=5\nUMask=0077\nTimeoutStopSec=20\n\n[Install]\nWantedBy=default.target\n"
     ))
 }
-pub fn bind(s: &Store) -> Result<Value> {
+fn focused_agent() -> Result<Value> {
     let pane = std::env::var("HERDR_PANE_ID").context("Bind inside focused Herdr pane")?;
     ensure!(
         std::env::var("HERDR_ENV").ok().as_deref() == Some("1") && !pane.is_empty(),
@@ -220,7 +275,10 @@ pub fn bind(s: &Store) -> Result<Value> {
         out.status.success() && out.stdout.len() <= 1048576,
         "Cannot inspect focused Herdr agent"
     );
-    let response: Value = serde_json::from_slice(&out.stdout)?;
+    Ok(serde_json::from_slice(&out.stdout)?)
+}
+pub fn bind(s: &Store) -> Result<Value> {
+    let response = focused_agent()?;
     let a = &response["result"]["agent"];
     let native = &a["agent_session"];
     ensure!(
@@ -272,6 +330,7 @@ pub fn serve(path: &Path, initial: &Value) -> Result<()> {
                 })
                 .collect::<Result<_>>()?;
             let runtime = OpenCode::new(&expand(&text(&c, "registry")), &text(&c, "model"))?;
+            crate::control::tick(&s, &runtime)?;
             workflows::tick(&s, &runtime, &mut runner)?;
             runtime::tick(&s, &runtime)?;
             approvals::deliver(&s, &runtime)?;
@@ -291,6 +350,38 @@ pub fn serve(path: &Path, initial: &Value) -> Result<()> {
     }
     Ok(())
 }
+pub fn status_options(args: &[String]) -> Result<Value> {
+    ensure!(
+        args.chunks_exact(2).remainder().is_empty(),
+        "Status options require values"
+    );
+    let mut result = json!({});
+    for pair in args.chunks_exact(2) {
+        let key = match pair[0].as_str() {
+            "--task-id" => "task_id",
+            "--workflow-id" => "workflow_id",
+            "--mode" => "mode",
+            "--section" => "section",
+            "--offset" => "offset",
+            "--limit" => "limit",
+            "--pointer" => "pointer",
+            "--file" => "file",
+            _ => bail!("Unknown status option"),
+        };
+        ensure!(result.get(key).is_none(), "Duplicate status option");
+        result[key] = if ["offset", "limit"].contains(&key) {
+            json!(
+                pair[1]
+                    .parse::<u64>()
+                    .context("Use a nonnegative integer")?
+            )
+        } else {
+            json!(pair[1])
+        };
+    }
+    Ok(result)
+}
+
 pub fn main(args: Vec<String>) -> Result<()> {
     let mut config = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")
         .map(PathBuf::from)
@@ -315,7 +406,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "teem [--config PATH] bind|status --foreman ID|mcp --foreman ID|board|open-status|serve|service-start|service-unit\nteem install-plugin\nNo command starts model work without enabled configuration."
+                "teem [--config PATH] bind|status --foreman ID|mcp --foreman ID|board|open-status|serve|service-start|service-unit\nteem install-plugin\nstatus options: [--task-id ID | --workflow-id ID] [--mode summary|detail] [--section overview|workflows|tasks|events|approvals|projects|progress|agent_progress|progress_delivery|check_output] [--offset N] [--limit N] [--pointer JSON_POINTER]\nSummary limit 1..5 rows (default 2); detail limit 1..4096 UTF-8 JSON bytes (default 2048). Use returned next_offset. Status is bounded to 24000 pretty-JSON bytes. check_output requires detail, workflow-id, and pointer /data/rounds/N/check_result/results/M.\nNo command starts model work without enabled configuration."
             );
             return Ok(());
         }
@@ -377,10 +468,26 @@ pub fn main(args: Vec<String>) -> Result<()> {
         return Ok(());
     }
     ensure!(
-        ["bind", "status", "mcp", "board", "serve", "service-start"].contains(&command.as_str()),
+        [
+            "bind",
+            "status",
+            "mcp",
+            "board",
+            "serve",
+            "service-start",
+            "enable-chat",
+            "native-tools",
+            "native-call",
+        ]
+        .contains(&command.as_str()),
         "Unknown command"
     );
     let c = load(&config)?;
+    if command == "native-tools" {
+        ensure!(rest.is_empty(), "native-tools accepts no arguments");
+        println!("{}", crate::enable::tools());
+        return Ok(());
+    }
     if command == "serve" {
         return serve(&config, &c);
     }
@@ -400,19 +507,41 @@ pub fn main(args: Vec<String>) -> Result<()> {
     }
     let s = open(&c)?;
     match command.as_str() {
+        "enable-chat" | "native-call" => {
+            ensure!(rest.is_empty(), "Native bridge accepts JSON on stdin only");
+            let mut bytes = Vec::new();
+            std::io::Read::take(std::io::stdin(), 65537).read_to_end(&mut bytes)?;
+            ensure!(bytes.len() <= 65536, "Native bridge input too large");
+            let request: Value = serde_json::from_slice(&bytes)?;
+            let runtime = OpenCode::new(&expand(&text(&c, "registry")), &text(&c, "model"))
+                .context("Configure an available native runtime registry and fallback model")?;
+            let result = if command == "enable-chat" {
+                crate::enable::enable(&s, &runtime, &request, &focused_agent()?)?
+            } else {
+                crate::enable::call(&s, &runtime, &request)?
+            };
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
         "bind" => println!("{}", bind(&s)?),
         "status" | "mcp" => {
             ensure!(
-                rest.len() == 2 && rest[0] == "--foreman",
-                "Select exactly --foreman ID"
+                rest.len() >= 2 && rest[0] == "--foreman",
+                "Select --foreman ID first"
             );
             let f = &rest[1];
             if command == "mcp" {
-                mcp(&s, f, std::io::stdin().lock(), std::io::stdout().lock())?;
+                ensure!(rest.len() == 2, "MCP accepts only --foreman ID");
+                mcp_configured(
+                    &s,
+                    f,
+                    std::io::stdin().lock(),
+                    std::io::stdout().lock(),
+                    Some(&config),
+                )?;
             } else {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&s.status(f, &json!({}))?)?
+                    serde_json::to_string_pretty(&s.status(f, &status_options(&rest[2..])?)?)?
                 );
             }
         }

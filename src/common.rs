@@ -26,6 +26,60 @@ pub fn text(v: &Value, key: &str) -> String {
 pub fn array(v: &Value) -> Vec<Value> {
     v.as_array().cloned().unwrap_or_default()
 }
+/// Syntax only: no network lookup, ownership inference, or spending authority.
+pub fn issue_reference(v: &Value) -> Result<String> {
+    let error = "Supply issue as owner/repo#positive-number (for example tidley/teem#8); an authorised issue is required for new managed work";
+    let value = v.as_str().context(error)?;
+    let (repo, number) = value.split_once('#').context(error)?;
+    let (owner, name) = repo.split_once('/').context(error)?;
+    ensure!(
+        !owner.is_empty()
+            && owner.len() <= 39
+            && !owner.starts_with('-')
+            && !owner.ends_with('-')
+            && !owner.contains("--")
+            && owner
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !name.is_empty()
+            && name.len() <= 100
+            && name != "."
+            && name != ".."
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            && !number.is_empty()
+            && number.bytes().all(|b| b.is_ascii_digit()),
+        "{error}"
+    );
+    let number = number
+        .parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .context(error)?;
+    Ok(format!(
+        "{}/{}#{number}",
+        owner.to_ascii_lowercase(),
+        name.to_ascii_lowercase()
+    ))
+}
+/// Only structured, validated associations may affect display text.
+pub fn issue_prefix(request: &Value, label: &str) -> String {
+    let Ok(issue) = issue_reference(&request["issue"]) else {
+        return label.to_owned();
+    };
+    format!("{issue} {}", without_issue_prefix(&issue, label))
+}
+pub fn without_issue_prefix<'a>(issue: &str, mut label: &'a str) -> &'a str {
+    loop {
+        let (prefix, rest) = label.split_once(' ').unwrap_or((label, ""));
+        if issue_reference(&json!(prefix)).ok().as_deref() != Some(issue) {
+            break;
+        }
+        label = rest.trim_start();
+    }
+    label
+}
 pub fn short(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }

@@ -118,6 +118,74 @@ pub fn verify(snapshot: &Value) -> Result<Vec<u8>> {
     );
     Ok(data)
 }
+
+// Keep native remote-based project discovery without copying an identity file,
+// permission rows, or the source's configuration. Ambiguous/local remotes retain
+// native fallback discovery. Never propagate credentials into managed clones.
+fn project_remote(source: &Path) -> Result<Option<String>> {
+    if git_text(source, &["remote"])? != "origin" {
+        return Ok(None);
+    }
+    let keys = git_text(
+        source,
+        &[
+            "config",
+            "--local",
+            "--no-includes",
+            "--name-only",
+            "--list",
+        ],
+    )?;
+    for key in keys.lines() {
+        let key = key.to_ascii_lowercase();
+        if key == "include.path"
+            || key.starts_with("includeif.")
+            || key == "extensions.worktreeconfig"
+            || key.starts_with("url.")
+                && (key.ends_with(".insteadof") || key.ends_with(".pushinsteadof"))
+        {
+            return Ok(None);
+        }
+    }
+    let Ok(bytes) = git(
+        source,
+        &["config", "--local", "--get-all", "remote.origin.url"],
+        None,
+        None,
+    ) else {
+        return Ok(None);
+    };
+    let Ok(value) = String::from_utf8(bytes) else {
+        return Ok(None);
+    };
+    let remote = value.strip_suffix('\n').unwrap_or(&value);
+    if remote.trim() != remote || remote.chars().any(char::is_control) {
+        return Ok(None);
+    }
+    let url = if let Some(scp) = remote.strip_prefix("git@") {
+        let Some((host, path)) = scp.split_once(':') else {
+            return Ok(None);
+        };
+        reqwest::Url::parse(&format!("ssh://git@{host}/{path}"))
+    } else {
+        reqwest::Url::parse(remote)
+    };
+    let Ok(url) = url else {
+        return Ok(None);
+    };
+    if !matches!(url.scheme(), "https" | "ssh")
+        || url.host_str().is_none()
+        || url.password().is_some()
+        || !(url.username().is_empty() || url.scheme() == "ssh" && url.username() == "git")
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path().trim_matches('/').is_empty()
+    {
+        return Ok(None);
+    }
+    Ok(Some(remote.to_owned()))
+}
+
 pub fn prepare(
     source: &Path,
     destination: &Path,
@@ -132,6 +200,7 @@ pub fn prepare(
     };
     fresh_destination(&destination)?;
     let patch = snapshot.map(verify).transpose()?;
+    let remote = project_remote(&source)?;
     private_dir(destination.parent().unwrap())?;
     git(
         &source,
@@ -147,6 +216,15 @@ pub fn prepare(
         None,
     )?;
     fs::set_permissions(&destination, fs::Permissions::from_mode(0o700))?;
+    if let Some(remote) = remote {
+        // Objects still came exclusively from source; this does not fetch/push.
+        git(
+            &destination,
+            &["remote", "set-url", "origin", &remote],
+            None,
+            None,
+        )?;
+    }
     git(&destination, &["checkout", "--detach", base], None, None)?;
     if git(&destination, &["ls-files", "--", "AGENTS.md"], None, None)?.is_empty() {
         let mut instructions = source.join("AGENTS.md");

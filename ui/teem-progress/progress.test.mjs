@@ -1,8 +1,372 @@
 import { test, expect } from 'bun:test'
-import { parseProjection, selectProgress, nativeTodos } from './progress.mjs'
+import { parseProjection, selectProgress, nativeTodos, sidebarGroups } from './progress.mjs'
+import { enableCurrentChat, installEnableCommand, installNativeTools, nativeBridge } from './enable.mjs'
+
+function enableContext() {
+  let command
+  let disposed = false
+  const session = { id: 'ses_enabled', agent: 'build', projectID: 'project_a', location: { directory: '/project/a' } }
+  const context = {
+    options: { executable: '/absolute/teem', config: '/private/config.toml' },
+    ui: { router: { current: { sessionID: session.id } }, model: { current: { providerID: 'provider', modelID: 'selected', variant: 'high' } } },
+    data: { session: { sync: async id => { expect(id).toBe(session.id) }, get: id => id === session.id ? session : undefined } },
+    keymap: { layer(layer) { command = layer.commands[0]; return () => { disposed = true } } },
+  }
+  return { context, session, command: () => command, disposed: () => disposed }
+}
+const enabled = input => ({ enabled: true, sessionID: input.sessionID, project: 'a', started: false })
+
+test('/teem enable sends exact current native identity and UI-selected model without starting work', async () => {
+  const f = enableContext()
+  const calls = []
+  const invoke = async (...args) => { calls.push(args); return enabled(args[2]) }
+  const first = await enableCurrentChat(f.context, ' enable ', invoke)
+  expect(await enableCurrentChat(f.context, 'enable', invoke)).toEqual(first)
+  expect(calls).toHaveLength(2)
+  expect(calls[0]).toEqual([f.context.options, 'enable-chat', {
+    sessionID: 'ses_enabled', agent: 'build', projectID: 'project_a', directory: '/project/a',
+    model: { providerID: 'provider', id: 'selected', variant: 'high' },
+  }])
+  delete f.context.ui.model.current.variant
+  await enableCurrentChat(f.context, 'enable', invoke)
+  expect(calls[2][2].model).toEqual({ providerID: 'provider', id: 'selected' })
+})
+
+test('enable refuses unsupported commands, missing identity/model and unconfirmed bridge success', async () => {
+  const f = enableContext()
+  let called = false
+  const invoke = async () => { called = true; return {} }
+  for (const raw of ['', 'enabled', 'disable', 'enable extra', null]) {
+    await expect(enableCurrentChat(f.context, raw, invoke)).rejects.toThrow('Use /teem enable')
+  }
+  f.context.ui.router.current = {}
+  await expect(enableCurrentChat(f.context, 'enable', invoke)).rejects.toThrow('Open the intended chat')
+  f.context.ui.router.current = { sessionID: f.session.id }
+  delete f.session.agent
+  await expect(enableCurrentChat(f.context, 'enable', invoke)).rejects.toThrow('identity unavailable')
+  f.session.agent = 'build'
+  f.context.ui.model.current = undefined
+  await expect(enableCurrentChat(f.context, 'enable', invoke)).rejects.toThrow('Select a provider')
+  expect(called).toBe(false)
+  f.context.ui.model.current = { providerID: 'p', modelID: 'm' }
+  await expect(enableCurrentChat(f.context, 'enable', invoke)).rejects.toThrow('did not confirm')
+  await expect(enableCurrentChat(f.context, 'enable', async () => ({ enabled: true, sessionID: 'ses_other', started: false }))).rejects.toThrow('did not confirm')
+})
+
+test('command success and repeated errors remain associated with origin across navigation and awaits', async () => {
+  const f = enableContext()
+  const messages = new Map()
+  let resolve
+  let fail = false
+  const pending = new Promise(done => { resolve = done })
+  const invoke = async (_, command, input) => {
+    expect(command).toBe('enable-chat')
+    await pending
+    if (fail) throw new Error('runtime unavailable')
+    return enabled(input)
+  }
+  const dispose = installEnableCommand(f.context, (sessionID, message) => messages.set(sessionID, message), invoke)
+  const command = f.command()
+  expect(command).toMatchObject({ id: 'teem.enable', slash: { name: 'teem', arguments: true }, palette: true })
+  const run = command.run('enable')
+  f.context.ui.router.current = { sessionID: 'ses_other' }
+  resolve()
+  await run
+  expect(messages.get('ses_enabled')).toContain('Teem enabled')
+  expect(messages.has('ses_other')).toBe(false)
+  f.context.ui.router.current = { sessionID: 'ses_enabled' }
+  fail = true
+  for (let i = 0; i < 2; i++) {
+    const failed = command.run('enable')
+    f.context.ui.router.current = { sessionID: 'ses_other' }
+    await failed
+    expect(messages.get('ses_enabled')).toContain('runtime unavailable')
+    expect(messages.has('ses_other')).toBe(false)
+    f.context.ui.router.current = { sessionID: 'ses_enabled' }
+  }
+  dispose()
+  expect(f.disposed()).toBe(true)
+})
+
+test('navigation while session sync awaits cannot substitute another chat model or error destination', async () => {
+  for (const rejectSync of [false, true]) {
+    const f = enableContext()
+    const messages = new Map()
+    let finish
+    f.context.data.session.sync = () => new Promise((resolve, reject) => {
+      finish = () => rejectSync ? reject(new Error('session sync failed')) : resolve()
+    })
+    let sent
+    installEnableCommand(f.context, (id, message) => messages.set(id, message), async (_, __, input) => {
+      sent = input
+      return enabled(input)
+    })
+    const run = f.command().run('enable')
+    f.context.ui.router.current = { sessionID: 'ses_other' }
+    f.context.ui.model.current = { providerID: 'other', modelID: 'other' }
+    finish()
+    await run
+    expect(messages.has('ses_other')).toBe(false)
+    expect(messages.get('ses_enabled')).toContain(rejectSync ? 'session sync failed' : 'Teem enabled')
+    if (!rejectSync) expect(sent.model).toEqual({ providerID: 'provider', id: 'selected', variant: 'high' })
+  }
+})
+
+test('native tool registration uses trusted invocation context not tool input, and disposes', async () => {
+  const f = enableContext()
+  const definitions = [{ name: 'foreman_status', description: 'Inspect evidence', inputSchema: { type: 'object' } }]
+  let tool
+  let disposed = false
+  const calls = []
+  f.context.tool = { transform(edit) { edit({ add: value => { tool = value } }); return () => { disposed = true } } }
+  const invoke = async (...args) => { calls.push(args); return args[1] === 'native-tools' ? definitions : { counts: {} } }
+  const dispose = await installNativeTools(f.context, invoke)
+  expect(tool.input).toEqual(definitions[0].inputSchema)
+  const signal = new AbortController().signal
+  const input = { sessionID: 'ses_forged', agent: 'forged' }
+  expect(await tool.execute(input, { sessionID: 'ses_trusted', agent: 'build', signal })).toEqual({ content: '{\n  "counts": {}\n}' })
+  expect(calls[1]).toEqual([f.context.options, 'native-call', { name: 'foreman_status', arguments: input, sessionID: 'ses_trusted', agent: 'build' }, signal])
+  dispose()
+  expect(disposed).toBe(true)
+  await expect(installNativeTools(f.context, async () => ({}))).rejects.toThrow('catalog unavailable')
+})
+
+test('native bridge fails visibly for missing configuration, aborted requests, spawn, exit and JSON errors', async () => {
+  await expect(nativeBridge({}, 'enable-chat', {})).rejects.toThrow('absolute executable and config')
+  const options = { executable: '/nonexistent/teem-issue1', config: '/private/config.toml' }
+  const abort = new AbortController()
+  abort.abort()
+  await expect(nativeBridge(options, 'enable-chat', {}, abort.signal)).rejects.toThrow('aborted')
+  await expect(nativeBridge(options, 'enable-chat', {})).rejects.toThrow()
+  await expect(nativeBridge({ ...options, executable: '/bin/false' }, 'native-tools')).rejects.toThrow('exited')
+  await expect(nativeBridge({ ...options, executable: '/bin/echo' }, 'native-tools')).rejects.toThrow('invalid JSON')
+})
 
 const todo = { content: 'Implement labels', status: 'in_progress' }
 const data = { version: 1, updated_at: 100, sessions: { ses_foreman: { todos: [todo] } } }
+
+// Match progress::workflow_rows, including its full evidence-compatible labels.
+const heading = (id = 'aaaaaaaa-0000', title = 'Compact sidebar', project = 'teem') => ({
+  id: `workflow_${id}`, workflow_id: id, workflow_state: 'checking', source: 'supervisor',
+  label: `${project} · ${title}`, content: `${project} · ${title} — running approved checks`,
+  status: 'in_progress', sidebar: { title, project },
+})
+const row = (head, id, label, status, detail, kind, extra = {}) => ({
+  id, workflow_id: head.workflow_id, source: 'supervisor', label: `${head.label} · ${label}`,
+  content: `${head.label} · ${label} — ${detail}`, status,
+  sidebar: { kind, label }, ...extra,
+})
+const selectedItems = (items, extra = {}) => selectProgress(parseProjection({ ...data,
+  sessions: { ses_foreman: { todos: items.map(({ content, status }) => ({ content, status })), items, ...extra } },
+}), 'ses_foreman', 101)
+
+test('verified issue prefixes heading and all compact child kinds once without expanding groups', () => {
+  const issue = 'tidley/teem#8'
+  const h = { ...heading(), issue }
+  h.label = `${issue} ${h.label}`
+  h.content = `${issue} ${h.content}`
+  const items = [h,
+    row(h, 'worker', 'Implementation', 'in_progress', 'running', 'implementation'),
+    row(h, 'check', 'tests', 'completed', 'passed (exit 0)', 'check'),
+    row(h, 'correctness', 'Review · correctness', 'pending', 'not started', 'review'),
+    row(h, 'scope', 'Review · tests/scope', 'in_progress', 'running', 'review'),
+    row(h, 'claim', `${issue} Inspect changes`, 'in_progress', 'agent-reported progress only', 'reported', { source: 'agent-reported' }),
+    row(h, 'unknown', 'Unknown stage', 'pending', 'not started', undefined),
+  ]
+  const before = structuredClone(items)
+  const selected = selectedItems(items)
+  expect(selected.groups).toHaveLength(1)
+  const group = selected.groups[0]
+  expect(group.title).toBe(`${issue} Compact sidebar`)
+  expect(group.rows).toHaveLength(6)
+  for (const content of [group.title, ...group.rows.map(r => r.content)]) {
+    expect(content.startsWith(issue + ' ')).toBe(true)
+    expect(content.split(issue)).toHaveLength(2)
+  }
+  expect(group.rows[1].content).toBe(`${issue} Tests · passed`)
+  expect(group.rows[4].content).toBe(`${issue} Reported: Inspect changes`)
+  expect(items).toEqual(before)
+})
+
+test('issue-looking native/manual titles and invalid associations are never inferred', () => {
+  const text = 'tidley/teem#8 User text'
+  const h = heading('unknown', text)
+  const legacy = selectedItems([h, row(h, 'check', 'tests', 'pending', 'not run yet', 'check')])
+  expect(legacy.groups[0].rows[0].content).toBe('Tests · pending')
+  for (const issue of ['#8', 'tidley/teem#0', 'tidley/teem#18446744073709551616', 'tidley/..#8', null]) {
+    const selected = selectedItems([{ ...h, issue }, row(h, 'check', 'tests', 'pending', 'not run yet', 'check')])
+    expect(selected.groups[0].rows[0].content).toBe('Tests · pending')
+  }
+  const manual = { content: text, status: 'pending' }
+  expect(selectedItems([manual]).groups[0].rows[0]).toEqual(manual)
+  expect(nativeTodos([{ type: 'assistant', content: [{ type: 'tool', name: 'todowrite',
+    state: { status: 'completed', input: { todos: [manual] } } }] }])).toEqual([manual])
+})
+
+test('long canonical references remain complete while compact stage labels stay short', () => {
+  const issue = `${'a'.repeat(39)}/${'b'.repeat(100)}#18446744073709551615`
+  const h = { ...heading('long', '🦀'.repeat(100)), issue }
+  h.label = `${issue} ${h.label}`
+  h.content = `${issue} ${h.content}`
+  const selected = selectedItems([h, row(h, 'check', 'tests', 'pending', 'not run yet', 'check')])
+  expect(selected.groups[0].title.startsWith(issue + ' ')).toBe(true)
+  expect(selected.groups[0].rows[0].content).toBe(`${issue} Tests · pending`)
+})
+
+test('compact rows show a workflow title/project once and short check/review labels', () => {
+  const h = heading()
+  const items = [h,
+    row(h, 'worker', 'Implementation', 'completed', 'execution finished', 'implementation', { task_id: 'task', task_state: 'succeeded' }),
+    row(h, 'tests', 'Tests', 'completed', 'passed (exit 0)', 'check'),
+    row(h, 'fmt', 'Format', 'pending', 'check batch active; individual result pending', 'check'),
+    row(h, 'clippy', 'Clippy', 'cancelled', 'failed; see recorded check evidence', 'check'),
+    row(h, 'review', 'Review · correctness', 'cancelled', 'changes requested; see recorded findings', 'review'),
+  ]
+  const before = structuredClone(items)
+  const group = selectedItems(items).groups[0]
+  expect(group.title).toBe('Compact sidebar')
+  expect(group.description).toContain('teem')
+  expect(group.rows.map(r => r.content)).toEqual([
+    'Tests · passed', 'Format · pending (batch)', 'Clippy · failed', 'Review · correctness · changes requested',
+  ])
+  expect(group.rows[1].status).toBe('pending')
+  expect(group.rows.every(r => !r.content.includes(h.label))).toBe(true)
+  expect(items).toEqual(before)
+  expect(selectedItems(items).todos).toHaveLength(items.length)
+})
+
+test('claims are not gate evidence; ended and completed claim clutter is hidden, failures retained', () => {
+  const h = heading()
+  const items = [h,
+    row(h, 'live', 'Implementation', 'in_progress', 'running', 'implementation', { task_id: 'live', task_state: 'running' }),
+    row(h, 'claim', 'Tests passed', 'in_progress', 'agent-reported progress only', 'reported', { source: 'agent-reported', task_id: 'live' }),
+    row(h, 'done', 'Old claim', 'completed', 'agent-reported progress only', 'reported', { source: 'agent-reported', task_id: 'live' }),
+    row(h, 'ended-claim', 'Late claim', 'in_progress', 'agent-reported progress only', 'reported', { source: 'agent-reported', task_id: 'ended' }),
+    row(h, 'ended', 'Implementation 2', 'cancelled', 'execution failed', 'implementation', { task_id: 'ended', task_state: 'failed' }),
+    row(h, 'tests', 'Tests', 'pending', 'not run yet', 'check'),
+  ]
+  const rows = selectedItems(items).groups[0].rows
+  expect(rows.map(r => r.content)).toEqual(['Implementation · running', 'Reported: Tests passed', 'Implementation 2 · failed', 'Tests · pending'])
+  expect(rows[1].reported).toBe(true)
+})
+
+test('same-title workflows and multiple projects retain distinct IDs and visible identity', () => {
+  const heads = [heading('aaaaaaaa-0000', 'Same', 'one'), heading('aaaaaaaa-1111', 'Same', 'one'), heading('bbbbbbbb-0000', 'Same', 'two')]
+  const groups = selectedItems(heads).groups
+  expect(new Set(groups.map(g => g.id)).size).toBe(3)
+  expect(new Set(groups.map(g => g.description)).size).toBe(3)
+  expect(groups[0].description).toContain('one')
+  expect(groups[2].description).toContain('two')
+})
+
+test('configured Rust and adapter checks use compact labels without implying batch execution', () => {
+  const h = heading()
+  const names = ['rust-tests', 'rust-format', 'rust-clippy', 'tui-tests', 'custom-inspection']
+  const items = [h, ...names.map((name, index) => row(h, `check-${index}`, name,
+    'pending', 'check batch active; individual result pending', 'check'))]
+  const group = selectedItems(items).groups[0]
+  expect(group.rows.map(r => r.content)).toEqual([
+    'Tests · pending (batch)', 'Format · pending (batch)', 'Clippy · pending (batch)',
+    'UI tests · pending (batch)', 'custom-inspection · pending (batch)',
+  ])
+  expect(group.rows.every(r => r.status === 'pending')).toBe(true)
+  expect(selectedItems(items).todos.map(t => t.content)).toEqual(items.map(i => i.content))
+})
+
+test('long and multibyte titles/claims are bounded without splitting surrogate pairs', () => {
+  for (const title of ['Narrow', 'Very long title '.repeat(30), '🦄界'.repeat(120)]) {
+    const h = heading('workflow', title)
+    const groups = sidebarGroups({ items: [h, row(h, 'claim', '🦄'.repeat(300), 'in_progress', 'agent-reported progress only', 'reported', { source: 'agent-reported' })] })
+    expect([...groups[0].title].length).toBeLessThanOrEqual(32)
+    expect([...groups[0].rows[0].content].length).toBeLessThanOrEqual(56)
+    expect(groups[0].title).not.toMatch(/[\uD800-\uDBFF]$/)
+  }
+})
+
+test('manual entries stay separate and unchanged; legacy items use prefix only within their workflow', () => {
+  const h = heading()
+  delete h.sidebar
+  const worker = row(h, 'worker', 'Worker', 'in_progress', 'waiting for human approval or answer', 'implementation')
+  delete worker.sidebar
+  const manual = { id: 'manual', source: 'foreman-plan', content: 'teem · Keep manual text', status: 'completed' }
+  const groups = selectedItems([manual, h, worker, { ...manual, id: 'manual2' }]).groups
+  expect(groups[0].rows[0]).toMatchObject({ content: manual.content, status: 'completed' })
+  expect(groups[1].rows[0].content).toBe('Implementation · blocked: approval')
+  expect(groups[2].rows[0].content).toBe(manual.content)
+})
+
+test('optional malformed/unknown metadata falls back visibly without erasing usable rows', () => {
+  const h = heading()
+  const good = row(h, 'tests', 'Tests', 'pending', 'not run yet', 'check')
+  const broken = { ...good, id: 'bad', sidebar: { kind: 'future', label: {} } }
+  const selected = selectedItems([h, good, broken, { content: 'Manual row', status: 'pending', workflow_id: 7 }])
+  expect(selected.groups.flatMap(g => g.rows).some(r => r.content === 'Tests · pending')).toBe(true)
+  expect(selected.groups.flatMap(g => g.rows).some(r => r.content === 'Manual row')).toBe(true)
+  for (const items of [null, {}, Array(2001).fill(good)]) {
+    const value = structuredClone(data)
+    value.sessions.ses_foreman.items = items
+    const result = selectProgress(parseProjection(value), 'ses_foreman', 101)
+    expect(result.todos).toEqual([todo])
+    expect(result.groups[0].rows[0].content).toContain('compact view unavailable')
+    expect(result.groups[1].rows).toEqual([todo])
+  }
+})
+
+test('grouped stale observations and integration receipts survive and recover unchanged', () => {
+  const h = heading()
+  const receipt = { workflow_id: 'old', state: 'ready', title: 'Earlier work', content: 'Committed · exact candidate; publication not checked' }
+  const value = { ...data, sessions: { ses_foreman: { items: [h], todos: [{ content: h.content, status: h.status }], latest_result: receipt } } }
+  const old = parseProjection(value)
+  expect(selectProgress(old, 'ses_foreman', 121)).toMatchObject({ stale: true, latest_result: receipt, groups: old.sessions.ses_foreman.groups })
+  const fresh = parseProjection({ ...value, updated_at: 121 })
+  expect(selectProgress(fresh, 'ses_foreman', 122)).toMatchObject({ stale: false, latest_result: receipt })
+  expect(selectedItems([], { latest_result: receipt }).groups).toEqual([])
+})
+
+test('pending verdict, stopped batch and unknown future states do not imply a pass', () => {
+  const h = heading()
+  h.workflow_state = 'future-state'
+  const group = selectedItems([h,
+    row(h, 'review', 'Review · tests/scope', 'in_progress', 'execution finished; verdict pending', 'review', { task_state: 'succeeded' }),
+    row(h, 'check', 'Tests', 'cancelled', 'not run; check batch stopped', 'check'),
+    row(h, 'uncertain', 'Implementation', 'in_progress', 'uncertain; no replacement started', 'implementation'),
+  ]).groups[0]
+  expect(group.state).toBe('unknown state')
+  expect(group.rows.map(r => r.content)).toEqual([
+    'Review · tests/scope · verdict pending', 'Tests · not run', 'Implementation · blocked: uncertain',
+  ])
+  expect(group.rows.every(r => r.status !== 'completed')).toBe(true)
+})
+
+test('invalid individual item fields retain the corresponding native-compatible row', () => {
+  const value = structuredClone(data)
+  value.sessions.ses_foreman.items = [{ content: {}, status: 'pending', workflow_id: {}, sidebar: { title: [] } }]
+  expect(selectProgress(parseProjection(value), 'ses_foreman', 101).groups[0].rows).toEqual([todo])
+  const h = heading()
+  h.sidebar = { title: [], project: 'x'.repeat(301), revision: '1', extra: { ignored: true } }
+  expect(selectedItems([h]).groups[0]).toMatchObject({ title: h.label, description: '#aaaaaaaa' })
+})
+
+test('unknown prototype-like strings are inert labels, not mapping entries', () => {
+  for (const name of ['constructor', '__proto__', 'toString']) {
+    const h = heading()
+    h.workflow_state = name
+    const group = selectedItems([h, row(h, 'check', name, 'pending', 'not run yet', 'check'),
+      row(h, 'claim', 'Claim', 'pending', 'agent-reported progress only', 'reported', { source: 'agent-reported', task_id: { toString: 'invalid' } }),
+    ]).groups[0]
+    expect(group.state).toBe('unknown state')
+    expect(group.rows[0].content).toBe(`${name} · pending`)
+    expect(group.rows[1].content).toBe('Reported: Claim')
+  }
+})
+
+test('mismatched optional item counts cannot erase compatible todos', () => {
+  const value = structuredClone(data)
+  value.sessions.ses_foreman.items = []
+  const selected = selectProgress(parseProjection(value), 'ses_foreman', 101)
+  expect(selected.groups[1].rows).toEqual([todo])
+  expect(selected.groups[0].rows[0].content).toContain('compact view unavailable')
+})
 
 test('bound sessions show only supervisor rows, even an empty current list', () => {
   expect(selectProgress(parseProjection(data), 'ses_foreman', 101)).toEqual({ todos: [todo], passive: true, stale: false })

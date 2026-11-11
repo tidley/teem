@@ -70,10 +70,25 @@ struct Fake {
     notifications: RefCell<usize>,
     fail_notify: bool,
     fail_model: bool,
+    stop_live: RefCell<bool>,
+    stop_lost: bool,
     pending: RefCell<Vec<Value>>,
     forms: RefCell<BTreeMap<String, Value>>,
 }
 impl Runtime for Fake {
+    fn is_stopped(&self, _: &Value) -> Result<bool> {
+        Ok(!*self.stop_live.borrow())
+    }
+    fn interrupt(&self, t: &Value) -> Result<()> {
+        self.calls
+            .borrow_mut()
+            .push(("STOP".into(), text(t, "session_id"), Value::Null));
+        if self.stop_lost {
+            anyhow::bail!("Simulated unknown interrupt response")
+        }
+        *self.stop_live.borrow_mut() = false;
+        Ok(())
+    }
     fn request(&self, m: &str, path: &str, p: Option<&Value>) -> Result<Value> {
         self.calls
             .borrow_mut()
@@ -125,6 +140,9 @@ impl Runtime for Fake {
         if self.fail_model {
             return Err(runtime::Missing.into());
         }
+        if !*self.stop_live.borrow() && self.calls.borrow().iter().any(|c| c.0 == "STOP") {
+            return Ok(json!({"state":"interrupted"}));
+        }
         Ok(self
             .outcomes
             .borrow()
@@ -157,14 +175,16 @@ fn frozen_legacy_wire_and_digest_contracts_match() {
         f["session_payload"]
     );
     assert_eq!(runtime::prompt_text(t), f["prompt_text"]);
-    assert_eq!(
-        runtime::event_payload(&f["event"]).unwrap(),
-        f["event_payload"]
-    );
-    assert_eq!(
-        runtime::event_payload(&f["workflow_event"]).unwrap(),
-        f["workflow_payload"]
-    );
+    for (event, key) in [
+        ("event", "event_payload"),
+        ("workflow_event", "workflow_payload"),
+    ] {
+        let mut payload = runtime::event_payload(&f[event]).unwrap();
+        assert!(text(&payload, "text").starts_with(&text(&f[key], "text")));
+        assert!(text(&payload, "text").contains("without ack"));
+        payload["text"] = f[key]["text"].clone();
+        assert_eq!(payload, f[key]);
+    }
     assert_eq!(digest(&f["canonical_value"]), f["canonical_digest"]);
 }
 
@@ -381,15 +401,26 @@ fn manual_plan_does_not_claim_verification_and_progress_has_no_model_calls() {
 }
 
 fn workflow_fixture(tmp: &Path, two: bool) -> (Store, Fake, Value) {
+    workflow_fixture_revisions(tmp, two, Some(1))
+}
+fn workflow_fixture_revisions(
+    tmp: &Path,
+    two: bool,
+    revisions: Option<u64>,
+) -> (Store, Fake, Value) {
     let p = tmp.join("source");
     repo(&p);
-    let policy=workflows::normalise_projects(&json!({"project":{"path":p,"max_revisions":1,"checks":[{"name":"tests","kind":"test","argv":["git","status","--porcelain"]}]}})).unwrap();
+    let mut config = json!({"project":{"path":p,"checks":[{"name":"tests","kind":"test","argv":["git","status","--porcelain"]}]}});
+    if let Some(n) = revisions {
+        config["project"]["max_revisions"] = json!(n);
+    }
+    let policy = workflows::normalise_projects(&config).unwrap();
     let s = store(tmp, &[], policy);
     let f = Fake {
         directory: p.to_str().unwrap().into(),
         ..Default::default()
     };
-    let mut req = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"project":"project","scope":["src"],"prompt":"Implement a scoped change","title":"A readable task"});
+    let mut req = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"issue":"tidley/teem#8","project":"project","scope":["src"],"prompt":"Implement a scoped change","title":"A readable task"});
     if two {
         req["workers"] = json!([{"scope":["src/a"],"prompt":"First part"},{"scope":["src/b"],"prompt":"Second part"}]);
     }
@@ -458,6 +489,930 @@ fn operator_integration_applies_exact_candidate_and_updates_shared_status_withou
             "content"
         )
         .contains("Applied locally")
+    );
+}
+
+#[test]
+fn revision_budget_change_does_not_revoke_qualified_integration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, w) = ready_operator_fixture(tmp.path());
+    s.projects["project"]["max_revisions"] = json!(3);
+    let result = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_integrate",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    assert_eq!(result["state"], "applied");
+    assert_eq!(
+        s.workflow(&text(&w, "id")).unwrap()["policy"]["max_revisions"],
+        1
+    );
+}
+
+#[test]
+fn issue8_unlinked_legacy_progress_remains_usable_without_backfill() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    let id = text(&w, "id");
+    // Historical records are inserted/adjusted only in this temporary fixture.
+    let mut request = w["request"].clone();
+    request.as_object_mut().unwrap().remove("issue");
+    s.exec(
+        "UPDATE workflows SET request=? WHERE id=?",
+        rusqlite::params![canonical(&request), id],
+    )
+    .unwrap();
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["state"], "working");
+    assert!(s.tasks(None).unwrap()[0]["request"].get("issue").is_none());
+    assert!(
+        progress::snapshot(&s, "ses_test").unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row.get("issue").is_none())
+    );
+    assert_eq!(s.workflow(&id).unwrap()["request"], request);
+}
+
+#[test]
+fn issue8_legacy_continuation_needs_explicit_issue_and_cannot_switch_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let parent_id = text(&w, "id");
+    let mut request = w["request"].clone();
+    request.as_object_mut().unwrap().remove("issue");
+    s.exec(
+        "UPDATE workflows SET request=? WHERE id=?",
+        rusqlite::params![canonical(&request), parent_id],
+    )
+    .unwrap();
+    let before = s
+        .query("SELECT * FROM workflows WHERE id=?", [&parent_id])
+        .unwrap();
+    let mut args =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":parent_id});
+    assert!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args)
+            .unwrap_err()
+            .to_string()
+            .contains("owner/repo#positive-number")
+    );
+    assert!(s.workflow(args["workflow_id"].as_str().unwrap()).is_err());
+    args["issue"] = json!("Tidley/Teem#8");
+    let follow = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(follow["request"]["issue"], "tidley/teem#8");
+    assert_eq!(follow["request"]["scope"], request["scope"]);
+    assert_eq!(follow["request"]["prompt"], request["prompt"]);
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap(),
+        follow
+    );
+    assert_eq!(
+        s.query("SELECT * FROM workflows WHERE id=?", [&parent_id])
+            .unwrap(),
+        before
+    );
+    args["issue"] = json!("tidley/teem#9");
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    args["source_workflow_id"] = follow["id"].clone();
+    // A terminal linked source must reject an explicit issue switch as well.
+    s.exec(
+        "UPDATE workflows SET state='ready',base_revision=?,data=? WHERE id=?",
+        rusqlite::params![
+            text(&w, "base_revision"),
+            canonical(&w["data"]),
+            text(&follow, "id")
+        ],
+    )
+    .unwrap();
+    args["workflow_id"] = json!(uuid::Uuid::new_v4().to_string());
+    assert!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot switch")
+    );
+    args["issue"] = json!("tidley/teem#8");
+    args["scope"] = json!(["outside"]);
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+}
+
+#[test]
+fn reconciliation_preserves_parent_and_requalifies_on_current_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, w) = ready_operator_fixture(tmp.path());
+    let parent = s
+        .query("SELECT * FROM workflows WHERE id=?", [text(&w, "id")])
+        .unwrap();
+    let source = tmp.path().join("source");
+    fs::write(source.join("unrelated"), "new source\n").unwrap();
+    git(&source, &["add", "unrelated"], None, None).unwrap();
+    git(&source, &["commit", "-qm", "advance"], None, None).unwrap();
+    let head = git_text(&source, &["rev-parse", "HEAD"]).unwrap();
+    s.projects["project"]["max_revisions"] = json!(3);
+    let id = uuid::Uuid::new_v4().to_string();
+    let args = json!({"workflow_id":id,"source_workflow_id":w["id"]});
+    let follow = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(follow["request"]["issue"], w["request"]["issue"]);
+    assert_eq!(follow["state"], "queued");
+    assert_eq!(follow["policy"]["max_revisions"], 3);
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap()["id"],
+        id
+    );
+    let f = Fake {
+        directory: source.to_str().unwrap().into(),
+        ..Default::default()
+    };
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "working", "{follow}");
+    assert_eq!(follow["base_revision"], head);
+    let task = s
+        .task(follow["data"]["rounds"][0]["worker_id"].as_str().unwrap())
+        .unwrap();
+    let checkout = PathBuf::from(text(&task, "checkout"));
+    assert_eq!(
+        fs::read_to_string(checkout.join("src/a")).unwrap(),
+        "changed\n"
+    );
+    assert!(
+        fs::read_to_string(checkout.join(".git/teem-reconciliation.patch"))
+            .unwrap()
+            .contains("+changed")
+    );
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    await_receipt(&follow["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "reviewing");
+    for review in array(&follow["data"]["rounds"][0]["review_ids"]) {
+        s.update(review.as_str().unwrap(),"succeeded",&json!({"snapshot":follow["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"pass","findings":[]}).to_string(),"").unwrap();
+    }
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["state"], "ready");
+    assert_eq!(
+        s.query("SELECT * FROM workflows WHERE id=?", [text(&w, "id")])
+            .unwrap(),
+        parent
+    );
+    assert_eq!(git_text(&source, &["rev-parse", "HEAD"]).unwrap(), head);
+    assert_eq!(fs::read_to_string(source.join("src/a")).unwrap(), "base\n");
+}
+
+#[test]
+fn approved_local_commit_records_exact_candidate_and_is_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let args = json!({"workflow_id":w["id"],"commit_local":true});
+    let receipt = plugin::call(&s, "ses_test", "foreman_integrate", &args).unwrap();
+    assert_eq!(receipt["state"], "committed");
+    let root = tmp.path().join("source");
+    assert_eq!(
+        git_text(&root, &["rev-parse", "HEAD"]).unwrap(),
+        receipt["commit"]
+    );
+    assert_eq!(
+        checkouts::source_revision(&root).unwrap(),
+        receipt["commit"]
+    );
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_integrate", &args).unwrap(),
+        receipt
+    );
+}
+
+// Retain an actual checked candidate with one snapshot-bound pass and one
+// uncertain native reviewer, then stop the latter through the managed path.
+fn stopped_candidate_fixture(tmp: &Path) -> (Store, Fake, Value) {
+    let (s, f, w) = workflow_fixture(tmp, false);
+    let id = text(&w, "id");
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    await_receipt(&w["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    let reviews = array(&w["data"]["rounds"][0]["review_ids"]);
+    s.update(reviews[1].as_str().unwrap(), "succeeded", &json!({"snapshot":w["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"pass","findings":[]}).to_string(), "").unwrap();
+    runtime::tick(&s, &f).unwrap();
+    s.update(
+        reviews[0].as_str().unwrap(),
+        "uncertain",
+        "retained partial result",
+        "No matching native input",
+    )
+    .unwrap();
+    *f.stop_live.borrow_mut() = true;
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_stop",
+        &json!({"workflow_id":id,"task_id":reviews[0]}),
+    )
+    .unwrap();
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":id});
+    assert_eq!(s.workflow(&id).unwrap()["stop"]["state"], "requested");
+    let reviewer = s.task(reviews[0].as_str().unwrap()).unwrap();
+    assert!(!f.is_stopped(&reviewer).unwrap());
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    teem::control::tick(&s, &f).unwrap();
+    assert_eq!(
+        s.workflow(&id).unwrap()["stop"]["targets"][0]["state"],
+        "waiting"
+    );
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    teem::control::tick(&s, &f).unwrap();
+    let w = s.workflow(&id).unwrap();
+    assert_eq!(w["state"], "blocked");
+    assert_eq!(w["stop"]["state"], "stopped");
+    let reviewer = s.task(reviews[0].as_str().unwrap()).unwrap();
+    assert!(f.is_stopped(&reviewer).unwrap());
+    assert_eq!(f.calls.borrow().iter().filter(|c| c.0 == "STOP").count(), 1);
+    assert_eq!(
+        s.task(reviews[0].as_str().unwrap()).unwrap()["state"],
+        "interrupted"
+    );
+    (s, f, w)
+}
+
+#[test]
+fn confirmed_stop_handoff_seeds_while_preparing_and_requires_fresh_qualification() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, f, w) = stopped_candidate_fixture(tmp.path());
+    let parent = s.workflow(&text(&w, "id")).unwrap();
+    let tasks = s.tasks(None).unwrap();
+    let stops = s.query("SELECT * FROM task_stops", []).unwrap();
+    let events = s.query("SELECT * FROM events", []).unwrap();
+    let source = tmp.path().join("source");
+    fs::write(source.join("unrelated"), "advanced source\n").unwrap();
+    git(&source, &["add", "unrelated"], None, None).unwrap();
+    git(&source, &["commit", "-qm", "advance"], None, None).unwrap();
+    let head = git_text(&source, &["rev-parse", "HEAD"]).unwrap();
+    s.projects["project"]["max_revisions"] = json!(3);
+    s.projects["project"]["checks"][0]["argv"] = json!(["git", "diff", "--check"]);
+    let id = uuid::Uuid::new_v4().to_string();
+    let args = json!({"workflow_id":id,"source_workflow_id":w["id"]});
+    let follow = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(follow["state"], "queued");
+    assert_eq!(follow["request"]["scope"], w["request"]["scope"]);
+    assert_eq!(follow["request"]["prompt"], w["request"]["prompt"]);
+    assert_eq!(follow["request"]["reconcile_root"], w["id"]);
+    assert_eq!(follow["policy"], s.projects["project"]);
+    assert!(array(&follow["data"]["rounds"]).is_empty());
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap()["id"],
+        id
+    );
+    let duplicate =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &duplicate).is_err());
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "working", "{follow}");
+    assert_eq!(follow["base_revision"], head);
+    let round = &follow["data"]["rounds"][0];
+    assert_eq!(array(&round["worker_ids"]).len(), 1);
+    assert!(round["check_result"].is_null());
+    assert!(array(&round["review_ids"]).is_empty());
+    let checkout = PathBuf::from(text(round, "checkout"));
+    assert_eq!(
+        fs::read_to_string(checkout.join("src/a")).unwrap(),
+        "changed\n"
+    );
+    let notes = read_json(&checkout.join(".git/teem-reconciliation.json")).unwrap();
+    assert_eq!(notes["source_workflow_id"], w["id"]);
+    assert_eq!(notes["seeded"], true);
+    assert_eq!(
+        notes["snapshot"],
+        w["data"]["rounds"][0]["snapshot"]["sha256"]
+    );
+    assert_eq!(
+        fs::read(checkout.join(".git/teem-reconciliation.patch")).unwrap(),
+        fs::read(text(&w["data"]["rounds"][0]["snapshot"], "patch")).unwrap()
+    );
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "checking");
+    assert_ne!(
+        follow["data"]["rounds"][0]["check_handle"],
+        w["data"]["rounds"][0]["check_handle"]
+    );
+    await_receipt(&follow["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "reviewing");
+    let reviews = array(&follow["data"]["rounds"][0]["review_ids"]);
+    assert_eq!(reviews.len(), 2);
+    assert_ne!(reviews[0], reviews[1]);
+    for (index, review) in reviews.iter().enumerate() {
+        assert!(!array(&w["data"]["rounds"][0]["review_ids"]).contains(review));
+        s.update(review.as_str().unwrap(), "succeeded", &json!({"snapshot":follow["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"pass","findings":[]}).to_string(), "").unwrap();
+        if index == 0 {
+            workflows::tick(&s, &f, &mut runner).unwrap();
+            assert_eq!(s.workflow(&id).unwrap()["state"], "reviewing");
+        }
+    }
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["state"], "ready");
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap(), parent);
+    assert_eq!(s.query("SELECT * FROM task_stops", []).unwrap(), stops);
+    for task in tasks {
+        assert_eq!(s.task(&text(&task, "id")).unwrap(), task);
+    }
+    for event in events {
+        assert_eq!(
+            s.query("SELECT * FROM events WHERE id=?", [text(&event, "id")])
+                .unwrap(),
+            vec![event]
+        );
+    }
+    assert_eq!(git_text(&source, &["rev-parse", "HEAD"]).unwrap(), head);
+    assert_eq!(fs::read_to_string(source.join("src/a")).unwrap(), "base\n");
+}
+
+#[test]
+fn stopped_handoff_rejects_unconfirmed_foreign_and_invalid_sources() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = stopped_candidate_fixture(tmp.path());
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    let stopped_task = text(&w["stop"]["targets"][0], "task_id");
+    let sibling = s
+        .task(w["data"]["rounds"][0]["review_ids"][1].as_str().unwrap())
+        .unwrap();
+    // Model observed reservations directly: update rejects queued and preserves
+    // terminal outcomes, including this already-succeeded sibling.
+    for state in ["queued", "starting", "accepted", "running", "uncertain"] {
+        s.exec(
+            "UPDATE tasks SET state=? WHERE id=?",
+            [state, &text(&sibling, "id")],
+        )
+        .unwrap();
+        assert_eq!(s.task(&text(&sibling, "id")).unwrap()["state"], state);
+        assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    }
+    s.exec(
+        "UPDATE tasks SET state=? WHERE id=?",
+        [text(&sibling, "state"), text(&sibling, "id")],
+    )
+    .unwrap();
+    assert_eq!(s.task(&text(&sibling, "id")).unwrap(), sibling);
+    for state in ["requested", "attempting", "waiting", "uncertain"] {
+        s.exec(
+            "UPDATE task_stops SET state=? WHERE task_id=?",
+            [state, &stopped_task],
+        )
+        .unwrap();
+        assert!(
+            plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err(),
+            "{state}"
+        );
+    }
+    s.exec(
+        "UPDATE task_stops SET state='stopped' WHERE task_id=?",
+        [&stopped_task],
+    )
+    .unwrap();
+    s.bind("ses_other", "other-terminal").unwrap();
+    assert!(plugin::call(&s, "ses_other", "foreman_reconcile", &args).is_err());
+    for state in ["failed", "working"] {
+        s.exec(
+            "UPDATE workflows SET state=? WHERE id=?",
+            [state, &text(&w, "id")],
+        )
+        .unwrap();
+        assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    }
+    s.exec(
+        "UPDATE workflows SET state='blocked' WHERE id=?",
+        [text(&w, "id")],
+    )
+    .unwrap();
+    s.exec(
+        "DELETE FROM workflow_stops WHERE workflow_id=?",
+        [text(&w, "id")],
+    )
+    .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    s.exec(
+        "INSERT INTO workflow_stops VALUES (?,?)",
+        rusqlite::params![text(&w, "id"), now()],
+    )
+    .unwrap();
+    let checkout = PathBuf::from(text(&w["data"]["rounds"][0], "checkout"));
+    fs::write(checkout.join("src/a"), "tampered checkout\n").unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    fs::write(checkout.join("src/a"), "changed\n").unwrap();
+    let mut data = w["data"].clone();
+    data["rounds"][0]["snapshot"] = Value::Null;
+    s.exec(
+        "UPDATE workflows SET data=? WHERE id=?",
+        [canonical(&data), text(&w, "id")],
+    )
+    .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    let mut data = w["data"].clone();
+    data["rounds"][0]["snapshot"]["base"] = json!("0".repeat(40));
+    s.exec(
+        "UPDATE workflows SET data=? WHERE id=?",
+        [canonical(&data), text(&w, "id")],
+    )
+    .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    s.exec(
+        "UPDATE workflows SET data=? WHERE id=?",
+        [canonical(&w["data"]), text(&w, "id")],
+    )
+    .unwrap();
+    let patch = text(&w["data"]["rounds"][0]["snapshot"], "patch");
+    fs::remove_file(&patch).unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    fs::write(&patch, "tampered patch").unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    assert_eq!(s.workflows("ses_test").unwrap().len(), 1);
+}
+
+#[test]
+fn stopped_handoff_requires_a_retained_in_scope_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_stop",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    teem::control::tick(&s, &f).unwrap();
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = stopped_candidate_fixture(tmp.path());
+    let checkout = PathBuf::from(text(&w["data"]["rounds"][0], "checkout"));
+    fs::write(checkout.join("outside"), "not this task\n").unwrap();
+    let snapshot = checkouts::capture(
+        &checkout,
+        &text(&w, "base_revision"),
+        &["src".into(), "outside".into()],
+        &tmp.path().join("outside-snapshot"),
+    )
+    .unwrap();
+    let mut data = w["data"].clone();
+    data["rounds"][0]["snapshot"] = snapshot;
+    s.exec(
+        "UPDATE workflows SET data=? WHERE id=?",
+        [canonical(&data), text(&w, "id")],
+    )
+    .unwrap();
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+}
+
+#[test]
+fn stopped_handoff_checks_full_lineage_and_rechecks_it_before_seeding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = stopped_candidate_fixture(tmp.path());
+    let child = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]}),
+    )
+    .unwrap();
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let child = s.workflow(&text(&child, "id")).unwrap();
+    let task = text(&child["data"]["rounds"][0], "worker_id");
+    s.exec(
+        "UPDATE workflows SET state='blocked' WHERE id=?",
+        [text(&child, "id")],
+    )
+    .unwrap();
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    // Include queued reservations without using the runtime transition API.
+    for state in ["queued", "starting", "accepted", "running", "uncertain"] {
+        s.exec("UPDATE tasks SET state=? WHERE id=?", [state, &task])
+            .unwrap();
+        assert_eq!(s.task(&task).unwrap()["state"], state);
+        assert!(
+            plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err(),
+            "{state}"
+        );
+    }
+    s.update(&task, "interrupted", "", "").unwrap();
+    s.exec(
+        "INSERT INTO task_stops(task_id,state) VALUES (?,'uncertain')",
+        [&task],
+    )
+    .unwrap();
+    for state in ["requested", "attempting", "waiting", "uncertain"] {
+        s.exec(
+            "UPDATE task_stops SET state=? WHERE task_id=?",
+            [state, &task],
+        )
+        .unwrap();
+        assert!(
+            plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err(),
+            "{state}"
+        );
+    }
+    s.exec(
+        "UPDATE task_stops SET state='stopped' WHERE task_id=?",
+        [&task],
+    )
+    .unwrap();
+    // A retained stopped sibling/descendant fixture. Its source snapshot is the
+    // original candidate; the root task must still reserve the whole lineage.
+    s.exec(
+        "UPDATE workflows SET data=?,base_revision=? WHERE id=?",
+        rusqlite::params![
+            canonical(&w["data"]),
+            text(&w, "base_revision"),
+            text(&child, "id")
+        ],
+    )
+    .unwrap();
+    s.exec(
+        "INSERT INTO workflow_stops VALUES (?,?)",
+        rusqlite::params![text(&child, "id"), now()],
+    )
+    .unwrap();
+    let root_task = text(&w["stop"]["targets"][0], "task_id");
+    // The managed stop already made these tasks terminal. Inject newly observed
+    // uncertainty without asking update to overwrite their terminal outcomes.
+    s.exec(
+        "UPDATE tasks SET state='uncertain' WHERE id=?",
+        [&root_task],
+    )
+    .unwrap();
+    assert_eq!(s.task(&root_task).unwrap()["state"], "uncertain");
+    let from_child =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":child["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &from_child).is_err());
+    s.exec(
+        "UPDATE tasks SET state='interrupted' WHERE id=?",
+        [&root_task],
+    )
+    .unwrap();
+    let grandchild = plugin::call(&s, "ses_test", "foreman_reconcile", &from_child).unwrap();
+    assert_eq!(grandchild["request"]["reconcile_root"], w["id"]);
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    // A newly observed reservation after admission must also prevent seeding.
+    s.exec("UPDATE tasks SET state='uncertain' WHERE id=?", [&task])
+        .unwrap();
+    assert_eq!(s.task(&task).unwrap()["state"], "uncertain");
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let grandchild = s.workflow(&text(&grandchild, "id")).unwrap();
+    assert_eq!(grandchild["state"], "blocked");
+    assert!(
+        !s.tasks(None)
+            .unwrap()
+            .iter()
+            .any(|t| t["request"]["workflow_id"] == grandchild["id"])
+    );
+}
+
+#[test]
+fn local_commit_preserves_unrelated_staged_bytes_after_an_applied_integration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_integrate",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    let root = tmp.path().join("source");
+    fs::write(root.join("src/a"), "valuable staged work\n").unwrap();
+    git(&root, &["add", "src/a"], None, None).unwrap();
+    fs::write(root.join("src/a"), "changed\n").unwrap();
+    let index = fs::read(root.join(".git/index")).unwrap();
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_integrate",
+            &json!({"workflow_id":w["id"],"commit_local":true})
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+    assert_eq!(
+        git_text(&root, &["show", ":src/a"]).unwrap(),
+        "valuable staged work"
+    );
+    assert_eq!(
+        git_text(&root, &["rev-parse", "HEAD"]).unwrap(),
+        w["base_revision"]
+    );
+}
+
+#[test]
+fn blocked_continuation_with_live_worker_prevents_another_reconciliation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, w) = ready_operator_fixture(tmp.path());
+    let first = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]}),
+    )
+    .unwrap();
+    let f = Fake {
+        directory: tmp.path().join("source").to_str().unwrap().into(),
+        ..Default::default()
+    };
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    runtime::tick(&s, &f).unwrap();
+    let first = s.workflow(&text(&first, "id")).unwrap();
+    let task = text(&first["data"]["rounds"][0], "worker_id");
+    s.update(&task, "running", "", "").unwrap();
+    s.projects["project"]["checks"][0]["timeout"] = json!(1);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    assert_eq!(s.workflow(&text(&first, "id")).unwrap()["state"], "blocked");
+    let another =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &another).is_err());
+    assert_eq!(s.task(&task).unwrap()["state"], "running");
+}
+
+#[test]
+fn mcp_reloads_project_policy_without_reconnecting_and_fails_closed() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, _) = workflow_fixture(tmp.path(), false);
+    let config = tmp.path().join("config.toml");
+    let policy = |n| {
+        format!(
+            "enabled = false\nstate_dir = {:?}\n[projects.project]\npath = {:?}\nmax_revisions = {n}\n[[projects.project.checks]]\nname = 'tests'\nkind = 'test'\nargv = ['git','status','--porcelain']\n",
+            s.directory,
+            tmp.path().join("source")
+        )
+    };
+    fs::write(&config, policy(1)).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_teem"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "mcp",
+            "--foreman",
+            "ses_test",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    for n in [1, 3] {
+        fs::write(&config, policy(n)).unwrap();
+        writeln!(input,"{}",json!({"jsonrpc":"2.0","id":n,"method":"tools/call","params":{"name":"foreman_status","arguments":{"section":"projects","limit":5}}})).unwrap();
+        input.flush().unwrap();
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        let response: Value = serde_json::from_str(&line).unwrap();
+        let status: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(status["projects"][0]["max_revisions"], n);
+    }
+    fs::write(&config, "invalid TOML [").unwrap();
+    writeln!(input,"{}",json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"foreman_status","arguments":{"section":"projects"}}})).unwrap();
+    input.flush().unwrap();
+    let mut line = String::new();
+    output.read_line(&mut line).unwrap();
+    let response: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(response["result"]["isError"], true);
+    drop(input);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn reconciliation_conflicts_are_given_to_worker_without_forcing_old_code() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let source = tmp.path().join("source");
+    fs::write(source.join("src/a"), "newer conflicting source\n").unwrap();
+    git(&source, &["add", "src/a"], None, None).unwrap();
+    git(&source, &["commit", "-qm", "conflict"], None, None).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":id,"source_workflow_id":w["id"]}),
+    )
+    .unwrap();
+    let f = Fake {
+        directory: source.to_str().unwrap().into(),
+        ..Default::default()
+    };
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let follow = s.workflow(&id).unwrap();
+    assert_eq!(follow["state"], "working", "{follow}");
+    let checkout = PathBuf::from(text(&follow["data"]["rounds"][0], "checkout"));
+    assert_eq!(
+        fs::read_to_string(checkout.join("src/a")).unwrap(),
+        "newer conflicting source\n"
+    );
+    assert_eq!(
+        read_json(&checkout.join(".git/teem-reconciliation.json")).unwrap()["seeded"],
+        false
+    );
+    assert_eq!(
+        fs::read_to_string(source.join("src/a")).unwrap(),
+        "newer conflicting source\n"
+    );
+}
+
+#[test]
+fn exhausted_candidate_continuation_uses_current_checks_not_old_qualification() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, mut w) = ready_operator_fixture(tmp.path());
+    s.save_workflow(&mut w, "needs_attention", "Exhausted fixture")
+        .unwrap();
+    s.projects["project"]["checks"][0]["argv"] = json!(["git", "diff", "--exit-code"]);
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    let follow = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(follow["policy"]["checks"], s.projects["project"]["checks"]);
+    assert!(array(&follow["data"]["rounds"]).is_empty());
+    assert_eq!(
+        s.workflow(&text(&w, "id")).unwrap()["state"],
+        "needs_attention"
+    );
+}
+
+#[test]
+fn reconciliation_reservation_covers_descendants_of_the_original_candidate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let mut first = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]}),
+    )
+    .unwrap();
+    // Retained exhausted child fixture with the same immutable patch, and no
+    // native tasks. The grandchild still reserves the original task lineage.
+    first["data"] = w["data"].clone();
+    first["base_revision"] = w["base_revision"].clone();
+    s.exec(
+        "UPDATE workflows SET data=?,base_revision=? WHERE id=?",
+        rusqlite::params![
+            canonical(&first["data"]),
+            text(&first, "base_revision"),
+            text(&first, "id")
+        ],
+    )
+    .unwrap();
+    s.save_workflow(&mut first, "needs_attention", "Retained fixture candidate")
+        .unwrap();
+    let grandchild = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":first["id"]}),
+    )
+    .unwrap();
+    assert_eq!(grandchild["request"]["reconcile_root"], w["id"]);
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_reconcile",
+            &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn reconciliation_rejects_foreign_active_duplicate_and_tampered_candidates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    s.bind("ses_other", "other-terminal").unwrap();
+    assert!(plugin::call(&s, "ses_other", "foreman_reconcile", &args).is_err());
+    let first = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    let other =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &other).is_err());
+    let active =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":first["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &active).is_err());
+    let patch = text(&w["data"]["rounds"][0]["snapshot"], "patch");
+    fs::remove_file(&patch).unwrap();
+    fs::write(&patch, "tampered").unwrap();
+    let source = tmp.path().join("source");
+    let f = Fake {
+        directory: source.to_str().unwrap().into(),
+        ..Default::default()
+    };
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    assert_eq!(
+        s.workflow(first["id"].as_str().unwrap()).unwrap()["state"],
+        "blocked"
+    );
+    assert!(
+        s.tasks(None)
+            .unwrap()
+            .iter()
+            .all(|t| t["request"]["workflow_id"] != first["id"])
+    );
+}
+
+#[test]
+fn integration_still_rejects_changed_checks_and_unknown_local_commit_outcomes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, w) = ready_operator_fixture(tmp.path());
+    let original = s.projects.clone();
+    s.projects["project"]["checks"][0]["timeout"] = json!(1);
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_integrate",
+            &json!({"workflow_id":w["id"],"commit_local":true})
+        )
+        .is_err()
+    );
+    s.projects = original;
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_integrate",
+            &json!({"workflow_id":w["id"],"commit_local":true,"commit":w["base_revision"]})
+        )
+        .is_err()
+    );
+    let applied = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_integrate",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    let mut reserved = applied;
+    reserved["state"] = json!("committing");
+    s.exec(
+        "UPDATE integrations SET receipt=? WHERE workflow_id=?",
+        rusqlite::params![canonical(&reserved), text(&w, "id")],
+    )
+    .unwrap();
+    let source = tmp.path().join("source");
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_integrate",
+            &json!({"workflow_id":w["id"],"commit_local":true})
+        )
+        .is_err()
+    );
+    assert_eq!(
+        git_text(&source, &["rev-parse", "HEAD"]).unwrap(),
+        w["base_revision"]
+    );
+    // Simulate a commit whose response was lost: a read can record it, not
+    // create a duplicate. Staging/commit here is test setup, not a tool retry.
+    git(&source, &["add", "src/a"], None, None).unwrap();
+    git(
+        &source,
+        &[
+            "commit",
+            "-m",
+            &format!("Teem integrate workflow {}", text(&w, "id")),
+        ],
+        None,
+        None,
+    )
+    .unwrap();
+    let result = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_integrate",
+        &json!({"workflow_id":w["id"],"commit_local":true}),
+    )
+    .unwrap();
+    assert_eq!(result["state"], "committed");
+    assert_eq!(
+        git_text(&source, &["rev-list", "--count", "HEAD"]).unwrap(),
+        "2"
     );
 }
 
@@ -717,6 +1672,610 @@ fn interrupted_workflow_does_not_prepare_or_replay_agents() {
     assert!(s.tasks(None).unwrap().is_empty());
     workflows::tick(&s, &f, &mut runner()).unwrap();
     assert!(s.tasks(None).unwrap().is_empty());
+}
+
+#[test]
+fn requested_stop_freezes_workflow_and_queued_agents_without_discarding_work() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    let id = text(&w, "id");
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let task = s.tasks(None).unwrap().remove(0);
+    let file = PathBuf::from(text(&task, "checkout")).join("src/a");
+    fs::write(&file, "unfinished work\n").unwrap();
+    let args = json!({"workflow_id":id});
+    let stop = plugin::call(&s, "ses_test", "foreman_stop", &args).unwrap();
+    assert_eq!(stop["workflow_id"], id);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    runtime::tick(&s, &f).unwrap();
+    assert!(f.calls.borrow().is_empty());
+    assert_eq!(s.workflow(&id).unwrap()["state"], "blocked");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "unfinished work\n");
+    assert_eq!(s.tasks(None).unwrap().len(), 1);
+    assert!(plugin::call(&s, "ses_test", "foreman_stop", &args).is_ok());
+    let detail = json!({"mode":"detail","section":"stopped_changes","task_id":task["id"],"file":"src/a","pointer":"/observed/patch","limit":4096});
+    assert!(s.status("ses_test", &detail).is_err());
+    teem::control::tick(&s, &f).unwrap();
+    let chunk = s.status("ses_test", &detail).unwrap();
+    let patch: String = serde_json::from_str(chunk["chunk"].as_str().unwrap()).unwrap();
+    assert!(patch.contains("+unfinished work"));
+    assert!(chunk["next_offset"].is_null());
+    assert_eq!(fs::read_to_string(&file).unwrap(), "unfinished work\n");
+}
+
+#[test]
+fn stop_confirmed_by_reads_survives_reopen_and_never_replaces_the_worker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    let id = text(&w, "id");
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    runtime::tick(&s, &f).unwrap();
+    let task = s.tasks(None).unwrap().remove(0);
+    s.update(&text(&task, "id"), "running", "partial result", "")
+        .unwrap();
+    *f.stop_live.borrow_mut() = true;
+    f.calls.borrow_mut().clear();
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_stop",
+        &json!({"workflow_id":id,"task_id":task["id"]}),
+    )
+    .unwrap();
+    teem::control::tick(&s, &f).unwrap();
+    assert_ne!(s.workflow(&id).unwrap()["stop"]["state"], "stopped");
+    teem::control::tick(&s, &f).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["stop"]["state"], "stopped");
+    assert_eq!(s.task(&text(&task, "id")).unwrap()["state"], "interrupted");
+    assert_eq!(
+        s.task(&text(&task, "id")).unwrap()["result"],
+        "partial result"
+    );
+    let directory = s.directory.clone();
+    let projects = s.projects.clone();
+    drop(s);
+    let s = Store::open(&directory, &[], projects).unwrap();
+    for _ in 0..2 {
+        teem::control::tick(&s, &f).unwrap();
+        workflows::tick(&s, &f, &mut runner()).unwrap();
+        runtime::tick(&s, &f).unwrap();
+    }
+    assert_eq!(s.tasks(None).unwrap().len(), 1);
+    assert_eq!(f.calls.borrow().iter().filter(|c| c.0 == "STOP").count(), 1);
+    assert!(
+        !f.calls
+            .borrow()
+            .iter()
+            .any(|c| c.0 == "CREATE" || c.0 == "PROMPT")
+    );
+}
+
+#[test]
+fn unknown_stop_response_is_never_resent_and_idle_read_can_reconcile_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, mut f, w) = workflow_fixture(tmp.path(), false);
+    let id = text(&w, "id");
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    runtime::tick(&s, &f).unwrap();
+    f.stop_lost = true;
+    *f.stop_live.borrow_mut() = true;
+    f.calls.borrow_mut().clear();
+    plugin::call(&s, "ses_test", "foreman_stop", &json!({"workflow_id":id})).unwrap();
+    for _ in 0..3 {
+        teem::control::tick(&s, &f).unwrap();
+    }
+    assert_eq!(s.workflow(&id).unwrap()["stop"]["state"], "uncertain");
+    assert_eq!(f.calls.borrow().iter().filter(|c| c.0 == "STOP").count(), 1);
+    *f.stop_live.borrow_mut() = false;
+    teem::control::tick(&s, &f).unwrap();
+    assert_eq!(s.workflow(&id).unwrap()["stop"]["state"], "stopped");
+}
+
+#[test]
+fn stopped_workflow_rejects_stale_controller_saves_and_foreign_stop_requests() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, mut w) = workflow_fixture(tmp.path(), false);
+    let id = text(&w, "id");
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    s.bind("ses_other", "other-terminal").unwrap();
+    assert!(plugin::call(&s, "ses_other", "foreman_stop", &json!({"workflow_id":id})).is_err());
+    assert!(
+        s.query("SELECT * FROM workflow_stops", [])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_stop",
+            &json!({"workflow_id":id,"task_id":uuid::Uuid::new_v4().to_string()})
+        )
+        .is_err()
+    );
+    plugin::call(&s, "ses_test", "foreman_stop", &json!({"workflow_id":id})).unwrap();
+    assert!(
+        s.save_workflow(&mut w, "working", "stale progress")
+            .is_err()
+    );
+    teem::control::tick(&s, &f).unwrap();
+    assert_eq!(s.tasks(None).unwrap()[0]["state"], "interrupted");
+    assert_eq!(s.workflow(&id).unwrap()["stop"]["state"], "stopped");
+    assert_eq!(s.workflow(&id).unwrap()["state"], "blocked");
+    assert!(s.claim().unwrap().is_none());
+}
+
+#[test]
+fn queued_workflow_can_be_stopped_before_checkout_preparation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_stop",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    runtime::tick(&s, &f).unwrap();
+    assert!(s.tasks(None).unwrap().is_empty());
+    assert!(!s.directory.join("managed").exists());
+    assert_eq!(
+        s.workflow(&text(&w, "id")).unwrap()["stop"]["state"],
+        "stopped"
+    );
+}
+
+#[test]
+fn stop_cancels_permission_relay_without_answering_a_pending_worker_card() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let t = s.tasks(None).unwrap().remove(0);
+    s.update(&text(&t, "id"), "running", "", "").unwrap();
+    *f.pending.borrow_mut() = vec![
+        json!({"permission":{"id":"per_stop","sessionID":t["session_id"],"action":"shell","resources":["git diff"]},"input":{"command":"git diff"}}),
+    ];
+    approvals::deliver(&s, &f).unwrap();
+    for form in f.forms.borrow_mut().values_mut() {
+        form["state"] = json!({"status":"answered","answer":{"decision":"once"}});
+    }
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_stop",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    approvals::deliver(&s, &f).unwrap();
+    assert!(
+        !f.calls
+            .borrow()
+            .iter()
+            .any(|(_, path, _)| path.ends_with("/reply"))
+    );
+    assert_eq!(
+        s.query("SELECT reply_attempted FROM approvals", [])
+            .unwrap()[0]["reply_attempted"],
+        0
+    );
+}
+
+#[test]
+fn native_interrupt_transport_accepts_its_unwrapped_boolean_contract() {
+    let tmp = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let registry = tmp.path().join("registry.json");
+    fs::write(&registry,json!({"url":format!("http://{}",listener.local_addr().unwrap()),"password":"test-only-password"}).to_string()).unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0; 4096];
+        let n = stream.read(&mut buf).unwrap();
+        assert!(
+            String::from_utf8_lossy(&buf[..n]).starts_with("POST /api/session/ses_test/interrupt ")
+        );
+        let body = b"{\"interrupted\":true}";
+        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();
+        stream.write_all(body).unwrap();
+    });
+    let r = runtime::OpenCode::new(&registry, "test/model").unwrap();
+    assert_eq!(
+        r.request("POST", "/api/session/ses_test/interrupt", None)
+            .unwrap(),
+        json!({"interrupted":true})
+    );
+    server.join().unwrap();
+}
+
+fn delayed_native_response(method: &str, path: &str) -> Result<Value> {
+    let tmp = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let registry = tmp.path().join("registry.json");
+    fs::write(&registry,json!({"url":format!("http://{}",listener.local_addr().unwrap()),"password":"test-only-password"}).to_string()).unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0; 4096];
+        let received = stream.read(&mut bytes).unwrap();
+        assert!(received > 0, "Native request did not arrive");
+        thread::sleep(Duration::from_secs(11));
+        // A ten-second control request deliberately disconnects before this.
+        let _=stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{\"data\":{\"id\":\"ok\"}}");
+    });
+    let runtime = runtime::OpenCode::new(&registry, "test/model").unwrap();
+    let result = runtime.request(method, path, None);
+    server.join().unwrap();
+    result
+}
+
+#[test]
+fn native_prompt_admission_survives_more_than_ten_seconds_of_server_load() {
+    assert_eq!(
+        delayed_native_response("POST", "/api/session/ses_test/prompt").unwrap(),
+        json!({"id":"ok"})
+    );
+}
+
+#[test]
+fn native_session_creation_survives_more_than_ten_seconds_of_server_load() {
+    assert_eq!(
+        delayed_native_response("POST", "/api/session").unwrap(),
+        json!({"id":"ok"})
+    );
+}
+
+#[test]
+fn native_observation_calls_keep_the_short_timeout() {
+    assert!(delayed_native_response("GET", "/api/session/ses_test").is_err());
+}
+
+#[test]
+fn native_stop_requires_exact_identity_and_does_not_call_queued_input_stopped() {
+    struct NativeStop {
+        session: Value,
+        inbox: Value,
+        posts: RefCell<usize>,
+    }
+    impl Runtime for NativeStop {
+        fn request(&self, m: &str, path: &str, _: Option<&Value>) -> Result<Value> {
+            if m == "POST" {
+                *self.posts.borrow_mut() += 1;
+                return Ok(json!({"interrupted":true}));
+            }
+            Ok(if path.ends_with("/active") {
+                json!({})
+            } else if path.ends_with("/inbox") {
+                self.inbox.clone()
+            } else {
+                self.session.clone()
+            })
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, _) = workflow_fixture(tmp.path(), false);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let mut task = s.tasks(None).unwrap().remove(0);
+    task["runtime_model"] = json!({"providerID":"test","id":"model"});
+    let session = runtime::session_payload(&task, &task["runtime_model"]);
+    let mut native = NativeStop {
+        session,
+        inbox: json!([]),
+        posts: RefCell::new(0),
+    };
+    assert!(native.is_stopped(&task).unwrap());
+    native.inbox = json!([{"id":task["prompt_id"]}]);
+    assert!(!native.is_stopped(&task).unwrap());
+    native.interrupt(&task).unwrap();
+    assert_eq!(*native.posts.borrow(), 1);
+    native.session["metadata"]["herdr_foreman"]["task_id"] = json!("foreign-task");
+    assert!(native.is_stopped(&task).is_err());
+    assert!(native.interrupt(&task).is_err());
+    assert_eq!(*native.posts.borrow(), 1);
+}
+
+#[test]
+fn live_changes_show_scoped_edits_and_new_files_without_touching_the_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, _w) = workflow_fixture(tmp.path(), false);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let t = s.tasks(None).unwrap().remove(0);
+    let root = PathBuf::from(text(&t, "checkout"));
+    let index = fs::read(root.join(".git/index")).unwrap();
+    fs::write(root.join("src/a"), "real implementation\n").unwrap();
+    fs::write(root.join("src/new file"), "new code\n").unwrap();
+    fs::write(root.join("private-secret"), "not in task scope\n").unwrap();
+    let args = json!({"task_id":t["id"],"section":"changes","mode":"detail","limit":4096});
+    let result = plugin::call(&s, "ses_test", "foreman_status", &args).unwrap();
+    let view: Value = serde_json::from_str(result["chunk"].as_str().unwrap()).unwrap();
+    assert_eq!(view["files"].as_array().unwrap().len(), 2);
+    assert_eq!(view["outside_scope_entries_omitted"], 1);
+    assert!(!result.to_string().contains("private-secret"));
+    let mut detail = args.clone();
+    detail["file"] = json!("src/a");
+    let result = plugin::call(&s, "ses_test", "foreman_status", &detail).unwrap();
+    assert!(
+        result["chunk"]
+            .as_str()
+            .unwrap()
+            .contains("+real implementation")
+    );
+    detail["file"] = json!("src/new file");
+    assert!(
+        plugin::call(&s, "ses_test", "foreman_status", &detail).unwrap()["chunk"]
+            .as_str()
+            .unwrap()
+            .contains("new code")
+    );
+    detail["file"] = json!("private-secret");
+    assert!(plugin::call(&s, "ses_test", "foreman_status", &detail).is_err());
+    detail["file"] = json!("../escape");
+    assert!(plugin::call(&s, "ses_test", "foreman_status", &detail).is_err());
+    assert_eq!(index, fs::read(root.join(".git/index")).unwrap());
+    // A required broken clean filter would make worktree git diff fail.
+    // Observation must read actual bytes without invoking that driver.
+    fs::write(root.join(".git/info/attributes"), "* filter=must_not_run\n").unwrap();
+    git(
+        &root,
+        &[
+            "config",
+            "filter.must_not_run.clean",
+            "teem-missing-command-do-not-execute",
+        ],
+        None,
+        None,
+    )
+    .unwrap();
+    git(
+        &root,
+        &["config", "filter.must_not_run.required", "true"],
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_status", &args).is_ok());
+    let previous = plugin::call(&s, "ses_test", "foreman_status", &args).unwrap()["sha256"].clone();
+    fs::write(root.join("src/another"), "changed again\n").unwrap();
+    assert_ne!(
+        previous,
+        plugin::call(&s, "ses_test", "foreman_status", &args).unwrap()["sha256"]
+    );
+    std::os::unix::fs::symlink(root.join("private-secret"), root.join("src/link")).unwrap();
+    detail["file"] = json!("src/link");
+    assert!(plugin::call(&s, "ses_test", "foreman_status", &detail).is_err());
+    s.bind("ses_other", "other-terminal").unwrap();
+    assert!(plugin::call(&s, "ses_other", "foreman_status", &args).is_err());
+}
+
+#[test]
+fn consuming_inbox_does_not_falsely_confirm_stop_and_running_inspection_wins() {
+    struct Consuming {
+        session: Value,
+        reads: RefCell<usize>,
+    }
+    impl Runtime for Consuming {
+        fn request(&self, _: &str, path: &str, _: Option<&Value>) -> Result<Value> {
+            if path.ends_with("/active") {
+                let n = *self.reads.borrow();
+                *self.reads.borrow_mut() += 1;
+                return Ok(if n == 0 {
+                    json!({})
+                } else {
+                    json!({text(&self.session,"id"):{"state":"running"}})
+                });
+            }
+            Ok(if path.ends_with("/inbox") {
+                json!([])
+            } else {
+                self.session.clone()
+            })
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    runtime::tick(&s, &f).unwrap();
+    let task = s.tasks(None).unwrap().remove(0);
+    let session = runtime::session_payload(&task, &task["runtime_model"]);
+    let r = Consuming {
+        session,
+        reads: RefCell::new(0),
+    };
+    assert!(!r.is_stopped(&task).unwrap());
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_stop",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    // Fake says inactive, but its inspection says running: do not finalize.
+    teem::control::tick(&s, &f).unwrap();
+    assert_eq!(
+        s.workflow(&text(&w, "id")).unwrap()["stop"]["state"],
+        "requested"
+    );
+}
+
+#[test]
+fn native_prompt_is_serialized_with_stop_creation_across_connections() {
+    use std::os::fd::AsRawFd;
+    struct Admission<'a> {
+        s: &'a Store,
+        f: Fake,
+    }
+    impl Runtime for Admission<'_> {
+        fn request(&self, m: &str, p: &str, v: Option<&Value>) -> Result<Value> {
+            self.f.request(m, p, v)
+        }
+        fn dispatch_model(&self, t: &Value) -> Result<Value> {
+            self.f.dispatch_model(t)
+        }
+        fn create(&self, t: &Value) -> Result<()> {
+            self.f.create(t)
+        }
+        fn prompt(&self, t: &Value) -> Result<()> {
+            let lock = open_lock(&self.s.directory.join("native-admission.lock"))?;
+            assert_ne!(
+                unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                0
+            );
+            self.f.prompt(t)
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let r = Admission {
+        s: &s,
+        f: Fake::default(),
+    };
+    runtime::tick(&s, &r).unwrap();
+    assert!(r.f.calls.borrow().iter().any(|c| c.0 == "PROMPT"));
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_stop",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+}
+
+#[test]
+fn stop_committing_during_form_read_prevents_permission_reply() {
+    struct StopOnRead<'a> {
+        s: &'a Store,
+        f: &'a Fake,
+        w: String,
+        armed: RefCell<bool>,
+    }
+    impl Runtime for StopOnRead<'_> {
+        fn request(&self, m: &str, p: &str, v: Option<&Value>) -> Result<Value> {
+            let value = self.f.request(m, p, v)?;
+            if m == "GET" && p.contains("/form/") && *self.armed.borrow() {
+                *self.armed.borrow_mut() = false;
+                plugin::call(
+                    self.s,
+                    "ses_test",
+                    "foreman_stop",
+                    &json!({"workflow_id":self.w}),
+                )?;
+            }
+            Ok(value)
+        }
+        fn approvals(&self, t: &Value) -> Result<Vec<Value>> {
+            self.f.approvals(t)
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let t = s.tasks(None).unwrap().remove(0);
+    s.update(&text(&t, "id"), "running", "", "").unwrap();
+    *f.pending.borrow_mut() = vec![
+        json!({"permission":{"id":"per_race","sessionID":t["session_id"],"action":"shell","resources":["git diff"]}}),
+    ];
+    approvals::deliver(&s, &f).unwrap();
+    for form in f.forms.borrow_mut().values_mut() {
+        form["state"] = json!({"status":"answered","answer":{"decision":"once"}});
+    }
+    let r = StopOnRead {
+        s: &s,
+        f: &f,
+        w: text(&w, "id"),
+        armed: RefCell::new(true),
+    };
+    approvals::deliver(&s, &r).unwrap();
+    assert!(
+        !f.calls
+            .borrow()
+            .iter()
+            .any(|(_, p, _)| p.ends_with("/reply"))
+    );
+}
+
+#[test]
+fn inspection_includes_staged_additions_and_mode_only_edits_in_preserved_handoff() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let t = s.tasks(None).unwrap().remove(0);
+    let root = PathBuf::from(text(&t, "checkout"));
+    fs::write(root.join("src/staged"), "staged new bytes\n").unwrap();
+    git(&root, &["add", "--", "src/staged"], None, None).unwrap();
+    fs::set_permissions(root.join("src/a"), fs::Permissions::from_mode(0o755)).unwrap();
+    let index = fs::read(root.join(".git/index")).unwrap();
+    let args = json!({"task_id":t["id"],"section":"changes","mode":"detail","limit":4096});
+    let result = s.status("ses_test", &args).unwrap();
+    let manifest: Value = serde_json::from_str(result["chunk"].as_str().unwrap()).unwrap();
+    assert_eq!(manifest["files"].as_array().unwrap().len(), 2);
+    assert_eq!(manifest["files"][0]["before_executable"], false);
+    assert_eq!(manifest["files"][0]["after_executable"], true);
+    let mut selected = args.clone();
+    selected["file"] = json!("src/staged");
+    assert!(
+        s.status("ses_test", &selected).unwrap()["chunk"]
+            .as_str()
+            .unwrap()
+            .contains("staged new bytes")
+    );
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_stop",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    teem::control::tick(&s, &f).unwrap();
+    selected["section"] = json!("stopped_changes");
+    assert!(
+        s.status("ses_test", &selected).unwrap()["chunk"]
+            .as_str()
+            .unwrap()
+            .contains("staged new bytes")
+    );
+    assert_eq!(index, fs::read(root.join(".git/index")).unwrap());
+}
+
+#[test]
+fn stop_during_native_creation_prevents_the_paid_prompt() {
+    struct StopDuringCreate<'a> {
+        store: &'a Store,
+        fake: Fake,
+    }
+    impl Runtime for StopDuringCreate<'_> {
+        fn request(&self, m: &str, path: &str, p: Option<&Value>) -> Result<Value> {
+            self.fake.request(m, path, p)
+        }
+        fn dispatch_model(&self, t: &Value) -> Result<Value> {
+            self.fake.dispatch_model(t)
+        }
+        fn create(&self, t: &Value) -> Result<()> {
+            self.fake.create(t)?;
+            plugin::call(
+                self.store,
+                "ses_test",
+                "foreman_stop",
+                &json!({"workflow_id":t["request"]["workflow_id"]}),
+            )?;
+            Ok(())
+        }
+        fn prompt(&self, t: &Value) -> Result<()> {
+            self.fake.prompt(t)
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let r = StopDuringCreate {
+        store: &s,
+        fake: Fake::default(),
+    };
+    runtime::tick(&s, &r).unwrap();
+    assert!(r.fake.calls.borrow().iter().any(|c| c.0 == "CREATE"));
+    assert!(!r.fake.calls.borrow().iter().any(|c| c.0 == "PROMPT"));
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap()["state"], "blocked");
+    assert_eq!(s.tasks(None).unwrap()[0]["state"], "interrupted");
 }
 #[test]
 fn policy_revocation_blocks_new_work_without_changing_source() {
@@ -978,6 +2537,9 @@ fn nonpassing_reviewer_forces_a_bounded_revision_with_new_ids() {
     assert_eq!(w["state"], "working", "{w}");
     assert_eq!(w["round"], 1);
     assert_eq!(w["data"]["rounds"].as_array().unwrap().len(), 2);
+    for task in s.tasks(None).unwrap() {
+        assert_eq!(task["request"]["issue"], w["request"]["issue"]);
+    }
     assert_ne!(
         w["data"]["rounds"][0]["worker_id"],
         w["data"]["rounds"][1]["worker_id"]
@@ -987,6 +2549,83 @@ fn nonpassing_reviewer_forces_a_bounded_revision_with_new_ids() {
             .unwrap(),
         "changed\n"
     );
+}
+
+#[test]
+fn default_workflow_allows_three_corrections_with_fresh_checks_and_reviews() {
+    exercise_default_revisions(true);
+}
+
+#[test]
+fn default_workflow_stops_after_four_implementation_rounds_without_replay() {
+    exercise_default_revisions(false);
+}
+
+fn exercise_default_revisions(pass_last: bool) {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, f, w) = workflow_fixture_revisions(tmp.path(), false, None);
+    assert_eq!(w["policy"]["max_revisions"], 3);
+    s.projects["project"]["max_revisions"] = json!(0);
+    let id = text(&w, "id");
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let mut workers = std::collections::BTreeSet::new();
+    let mut reviewers = std::collections::BTreeSet::new();
+    for round in 0..4 {
+        let w = s.workflow(&id).unwrap();
+        assert_eq!(w["state"], "working");
+        assert_eq!(w["round"], round);
+        let r = &w["data"]["rounds"][round];
+        assert!(workers.insert(text(r, "worker_id")));
+        finish_workers(&s);
+        workflows::tick(&s, &f, &mut runner).unwrap();
+        let w = s.workflow(&id).unwrap();
+        assert_eq!(w["state"], "checking");
+        await_receipt(&w["data"]["rounds"][round]["check_handle"]);
+        workflows::tick(&s, &f, &mut runner).unwrap();
+        let w = s.workflow(&id).unwrap();
+        assert_eq!(w["state"], "reviewing");
+        let r = &w["data"]["rounds"][round];
+        let ids = array(&r["review_ids"]);
+        assert_eq!(ids.len(), 2);
+        for reviewer in ids {
+            assert!(reviewers.insert(reviewer.as_str().unwrap().to_owned()));
+            let verdict = if round == 3 && pass_last {
+                "pass"
+            } else {
+                "changes_requested"
+            };
+            let findings = if verdict == "pass" {
+                json!([])
+            } else {
+                json!([{"path":"src/a","line":1,"message":"Fix demonstrated fixture issue"}])
+            };
+            s.update(
+                reviewer.as_str().unwrap(),
+                "succeeded",
+                &json!({"snapshot":r["snapshot"]["sha256"],"verdict":verdict,"findings":findings})
+                    .to_string(),
+                "",
+            )
+            .unwrap();
+        }
+        workflows::tick(&s, &f, &mut runner).unwrap();
+    }
+    let w = s.workflow(&id).unwrap();
+    assert_eq!(
+        w["state"],
+        if pass_last {
+            "ready"
+        } else {
+            "needs_attention"
+        }
+    );
+    assert_eq!(w["data"]["rounds"].as_array().unwrap().len(), 4);
+    assert_eq!(workers.len(), 4);
+    assert_eq!(reviewers.len(), 8);
+    let count = s.tasks(None).unwrap().len();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.tasks(None).unwrap().len(), count);
 }
 
 #[test]
@@ -1216,6 +2855,32 @@ fn native_inbox_receipt_rejects_wrong_foreman() {
         json!([{"id":payload["id"],"type":"synthetic","sessionID":"ses_wrong","payload":payload}]),
     );
     assert!(r.accepted(event).is_err());
+}
+#[test]
+fn historical_completion_receipts_reconcile_without_replay() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
+    for (event, payload) in [
+        ("event", "event_payload"),
+        ("workflow_event", "workflow_payload"),
+    ] {
+        let e = &fixture[event];
+        let p = &fixture[payload];
+        let prefix = format!("/api/session/{}", text(e, "foreman"));
+        let mut r = Routes {
+            values: BTreeMap::new(),
+        };
+        r.values.insert(
+            format!("{prefix}/inbox"),
+            json!([{"id":p["id"],"type":"synthetic","sessionID":e["foreman"],"payload":p}]),
+        );
+        assert!(r.accepted(e).unwrap());
+        r.values.clear();
+        r.values.insert(
+            format!("{prefix}/message/{}", text(p, "id")),
+            json!({"id":p["id"],"type":"synthetic","text":p["text"],"metadata":p["metadata"]}),
+        );
+        assert!(r.accepted(e).unwrap());
+    }
 }
 #[test]
 fn permission_observation_requires_exact_tool_input_and_worker_identity() {
@@ -1546,6 +3211,73 @@ fn wrong_snapshot_reviewer_execution_does_not_qualify_workflow() {
     workflows::tick(&s, &f, &mut runner).unwrap();
     assert_eq!(s.workflow(&id).unwrap()["state"], "blocked");
 }
+#[test]
+fn sidebar_metadata_is_additive_and_batch_checks_are_individually_pending() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = workflow_fixture(tmp.path(), false);
+    s.exec(
+        "UPDATE workflows SET state='checking',data=? WHERE id=?",
+        rusqlite::params![
+            json!({"rounds":[{"check_handle":{"pending":true}}]}).to_string(),
+            text(&w, "id")
+        ],
+    )
+    .unwrap();
+    let p = progress::snapshot(&s, "ses_test").unwrap();
+    let items = array(&p["items"]);
+    assert_eq!(items[0]["sidebar"]["project"], "project");
+    assert_eq!(items[0]["sidebar"]["title"], progress::title(&w));
+    assert_eq!(items[1]["sidebar"]["label"], "Implementation");
+    let check = items
+        .iter()
+        .find(|r| r["sidebar"]["kind"] == "check")
+        .unwrap();
+    assert_eq!(check["status"], "pending");
+    assert!(text(check, "content").contains("individual result pending"));
+    assert!(text(check, "label").starts_with(&text(&items[0], "label")));
+    assert_eq!(check["workflow_id"], w["id"]);
+    for (item, todo) in items.iter().zip(array(&p["todos"])) {
+        assert_eq!(item["content"], todo["content"]);
+        assert_eq!(item["status"], todo["status"]);
+    }
+    assert_eq!(
+        items.last().unwrap()["sidebar"]["label"],
+        "Review · tests/scope"
+    );
+    assert_eq!(
+        s.workflow(&text(&w, "id")).unwrap()["request"],
+        w["request"]
+    );
+}
+
+#[test]
+fn sidebar_check_and_review_metadata_retains_authoritative_failure_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = workflow_fixture(tmp.path(), false);
+    let evidence = json!({"name":"tests","returncode":1,"timed_out":false,"output_limited":false});
+    let data = json!({"rounds":[{"check_result":{"results":[evidence]},"review_results":[{"verdict":"changes_requested","findings":[{"message":"Keep evidence"}]}]}]});
+    s.exec(
+        "UPDATE workflows SET state='reviewing',data=? WHERE id=?",
+        rusqlite::params![canonical(&data), text(&w, "id")],
+    )
+    .unwrap();
+    let p = progress::snapshot(&s, "ses_test").unwrap();
+    let items = array(&p["items"]);
+    let check = items
+        .iter()
+        .find(|r| r["sidebar"]["kind"] == "check")
+        .unwrap();
+    assert_eq!(check["status"], "cancelled");
+    assert!(text(check, "content").contains("failed; see recorded check evidence"));
+    let review = items
+        .iter()
+        .find(|r| r["sidebar"]["label"] == "Review · correctness")
+        .unwrap();
+    assert_eq!(review["status"], "cancelled");
+    assert!(text(review, "content").contains("changes requested"));
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap()["data"], data);
+}
+
 #[test]
 fn review_execution_completion_is_not_a_passing_verdict_in_progress() {
     let tmp = tempfile::tempdir().unwrap();
