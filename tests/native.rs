@@ -2792,6 +2792,152 @@ fn native_todo_capability_does_not_change_edit_shell_or_delegation_rules() {
     after.retain(|r| r["action"] != "todowrite");
     assert_eq!(json!(after), before);
 }
+
+#[test]
+fn trusted_worker_shell_survives_enablement_rebuild_without_changing_reviewers() {
+    for (trusted, role, expected) in [
+        (true, "worker", 1),
+        (false, "worker", 0),
+        (true, "reviewer", 0),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("repo");
+        let base = repo(&path);
+        let mut config = json!({"state_dir":tmp.path().join("state"),"allowed_checkouts":[path],"projects":{},"trusted_worker_shell":trusted});
+        let s = plugin::open(&config).unwrap();
+        s.bind("ses_test", "terminal").unwrap();
+        let task = s.submit("ses_test", req(&path, &base, role)).unwrap();
+        assert_eq!(task["trusted_worker_shell"], 0);
+        let fake = Fake::default();
+        runtime::tick(&s, &fake).unwrap();
+        let recorded = s.task(&text(&task, "id")).unwrap();
+        assert_eq!(recorded["trusted_worker_shell"], expected);
+        let rules = array(&runtime::permissions(&recorded));
+        let shell = rules.iter().find(|r| r["action"] == "shell");
+        if role == "reviewer" {
+            assert!(shell.is_none());
+        } else {
+            assert_eq!(
+                shell.unwrap()["effect"],
+                if trusted { "allow" } else { "ask" }
+            );
+        }
+        for operation in ["CREATE", "PROMPT"] {
+            assert_eq!(
+                fake.calls
+                    .borrow()
+                    .iter()
+                    .find(|c| c.0 == operation)
+                    .unwrap()
+                    .2["trusted_worker_shell"],
+                expected
+            );
+        }
+        drop(s);
+        config["trusted_worker_shell"] = json!(!trusted);
+        let s = plugin::open(&config).unwrap();
+        assert_eq!(
+            s.task(&text(&task, "id")).unwrap()["trusted_worker_shell"],
+            expected
+        );
+        let mut altered = runtime::session_payload(&recorded, &Value::Null);
+        altered["permissions"] = json!([]);
+        assert!(runtime::validate_session(&recorded, &altered, &Value::Null).is_err());
+    }
+}
+
+#[test]
+fn trusted_worker_shell_configuration_is_explicit_boolean_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("config.toml");
+    for (setting, valid) in [
+        ("", true),
+        ("false", true),
+        ("true", true),
+        ("\"true\"", false),
+        ("1", false),
+    ] {
+        let extra = if setting.is_empty() {
+            String::new()
+        } else {
+            format!("trusted_worker_shell = {setting}\n")
+        };
+        fs::write(
+            &path,
+            format!("state_dir = {:?}\n{extra}", tmp.path().join("state")),
+        )
+        .unwrap();
+        let loaded = plugin::load(&path);
+        assert_eq!(loaded.is_ok(), valid);
+        if valid {
+            assert_eq!(loaded.unwrap()["trusted_worker_shell"], setting == "true");
+        }
+    }
+}
+#[test]
+fn trusted_worker_shell_changes_only_worker_shell_and_requires_a_pinned_flag() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
+    let mut task = fixture["task"].clone();
+    let mut expected = runtime::permissions(&task);
+    for rule in expected.as_array_mut().unwrap() {
+        if rule["action"] == "shell" {
+            rule["effect"] = json!("allow");
+        }
+    }
+    task["trusted_worker_shell"] = json!(1);
+    assert_eq!(runtime::permissions(&task), expected);
+    let old = &fixture["session_payload"];
+    assert!(runtime::validate_session(&fixture["task"], old, &Value::Null).is_ok());
+    assert!(runtime::validate_session(&task, old, &Value::Null).is_err());
+    let session = runtime::session_payload(&task, &Value::Null);
+    assert!(runtime::validate_session(&task, &session, &Value::Null).is_ok());
+    assert!(runtime::validate_session(&fixture["task"], &session, &Value::Null).is_err());
+    task["role"] = json!("reviewer");
+    let trusted_reviewer = runtime::permissions(&task);
+    task["trusted_worker_shell"] = json!(0);
+    assert_eq!(runtime::permissions(&task), trusted_reviewer);
+    assert!(
+        !array(&trusted_reviewer)
+            .iter()
+            .any(|r| r["action"] == "shell")
+    );
+}
+
+#[test]
+fn trusted_worker_shell_is_pinned_once_at_dispatch_and_survives_reopen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("repo");
+    let base = repo(&path);
+    let mut config = json!({"state_dir":tmp.path().join("state"),"allowed_checkouts":[path],"projects":{},"trusted_worker_shell":true});
+    let s = plugin::open(&config).unwrap();
+    s.bind("ses_test", "terminal").unwrap();
+    let task = s.submit("ses_test", req(&path, &base, "worker")).unwrap();
+    assert_eq!(task["trusted_worker_shell"], 0);
+    s.claim().unwrap();
+    let model = json!({"providerID":"test","id":"model"});
+    let task = s.record_model(&text(&task, "id"), &model).unwrap();
+    assert_eq!(task["trusted_worker_shell"], 1);
+    drop(s);
+    config["trusted_worker_shell"] = json!(false);
+    let s = plugin::open(&config).unwrap();
+    assert_eq!(
+        s.record_model(&text(&task, "id"), &model).unwrap()["trusted_worker_shell"],
+        1
+    );
+    // A legacy recorded dispatch is not upgraded by a later configuration change.
+    s.exec(
+        "UPDATE tasks SET trusted_worker_shell=0 WHERE id=?",
+        [text(&task, "id")],
+    )
+    .unwrap();
+    drop(s);
+    config["trusted_worker_shell"] = json!(true);
+    let s = plugin::open(&config).unwrap();
+    assert_eq!(
+        s.record_model(&text(&task, "id"), &model).unwrap()["trusted_worker_shell"],
+        0
+    );
+}
 #[test]
 fn native_input_absence_and_idle_without_terminal_outcome_are_uncertain() {
     let (t, mut r) = native_routes();

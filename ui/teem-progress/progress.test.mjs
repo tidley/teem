@@ -4,15 +4,16 @@ import { enableCurrentChat, installEnableCommand, installNativeTools, nativeBrid
 
 function enableContext() {
   let command
-  let disposed = false
   const session = { id: 'ses_enabled', agent: 'build', projectID: 'project_a', location: { directory: '/project/a' } }
+  const selected = { providerID: 'provider', modelID: 'selected', variant: 'high' }
   const context = {
     options: { executable: '/absolute/teem', config: '/private/config.toml' },
-    ui: { router: { current: { sessionID: session.id } }, model: { current: { providerID: 'provider', modelID: 'selected', variant: 'high' } } },
+    ui: { router: { current: () => ({ type: 'session', sessionID: session.id }) }, model: { current: () => selected } },
     data: { session: { sync: async id => { expect(id).toBe(session.id) }, get: id => id === session.id ? session : undefined } },
-    keymap: { layer(layer) { command = layer.commands[0]; return () => { disposed = true } } },
+    // Match the host SDK: a pure factory, owned cleanup, and no return value.
+    keymap: { layer(factory) { command = factory().commands[0] } },
   }
-  return { context, session, command: () => command, disposed: () => disposed }
+  return { context, session, command: () => command }
 }
 const enabled = input => ({ enabled: true, sessionID: input.sessionID, project: 'a', started: false })
 
@@ -27,7 +28,7 @@ test('/teem enable sends exact current native identity and UI-selected model wit
     sessionID: 'ses_enabled', agent: 'build', projectID: 'project_a', directory: '/project/a',
     model: { providerID: 'provider', id: 'selected', variant: 'high' },
   }])
-  delete f.context.ui.model.current.variant
+  delete f.context.ui.model.current().variant
   await enableCurrentChat(f.context, 'enable', invoke)
   expect(calls[2][2].model).toEqual({ providerID: 'provider', id: 'selected' })
 })
@@ -39,16 +40,16 @@ test('enable refuses unsupported commands, missing identity/model and unconfirme
   for (const raw of ['', 'enabled', 'disable', 'enable extra', null]) {
     await expect(enableCurrentChat(f.context, raw, invoke)).rejects.toThrow('Use /teem enable')
   }
-  f.context.ui.router.current = {}
+  f.context.ui.router.current = () => ({ type: 'home' })
   await expect(enableCurrentChat(f.context, 'enable', invoke)).rejects.toThrow('Open the intended chat')
-  f.context.ui.router.current = { sessionID: f.session.id }
+  f.context.ui.router.current = () => ({ type: 'session', sessionID: f.session.id })
   delete f.session.agent
   await expect(enableCurrentChat(f.context, 'enable', invoke)).rejects.toThrow('identity unavailable')
   f.session.agent = 'build'
-  f.context.ui.model.current = undefined
+  f.context.ui.model.current = () => undefined
   await expect(enableCurrentChat(f.context, 'enable', invoke)).rejects.toThrow('Select a provider')
   expect(called).toBe(false)
-  f.context.ui.model.current = { providerID: 'p', modelID: 'm' }
+  f.context.ui.model.current = () => ({ providerID: 'p', modelID: 'm' })
   await expect(enableCurrentChat(f.context, 'enable', invoke)).rejects.toThrow('did not confirm')
   await expect(enableCurrentChat(f.context, 'enable', async () => ({ enabled: true, sessionID: 'ses_other', started: false }))).rejects.toThrow('did not confirm')
 })
@@ -65,27 +66,25 @@ test('command success and repeated errors remain associated with origin across n
     if (fail) throw new Error('runtime unavailable')
     return enabled(input)
   }
-  const dispose = installEnableCommand(f.context, (sessionID, message) => messages.set(sessionID, message), invoke)
+  expect(installEnableCommand(f.context, (sessionID, message) => messages.set(sessionID, message), invoke)).toBeUndefined()
   const command = f.command()
   expect(command).toMatchObject({ id: 'teem.enable', slash: { name: 'teem', arguments: true }, palette: true })
   const run = command.run('enable')
-  f.context.ui.router.current = { sessionID: 'ses_other' }
+  f.context.ui.router.current = () => ({ type: 'session', sessionID: 'ses_other' })
   resolve()
   await run
   expect(messages.get('ses_enabled')).toContain('Teem enabled')
   expect(messages.has('ses_other')).toBe(false)
-  f.context.ui.router.current = { sessionID: 'ses_enabled' }
+  f.context.ui.router.current = () => ({ type: 'session', sessionID: 'ses_enabled' })
   fail = true
   for (let i = 0; i < 2; i++) {
     const failed = command.run('enable')
-    f.context.ui.router.current = { sessionID: 'ses_other' }
+    f.context.ui.router.current = () => ({ type: 'session', sessionID: 'ses_other' })
     await failed
     expect(messages.get('ses_enabled')).toContain('runtime unavailable')
     expect(messages.has('ses_other')).toBe(false)
-    f.context.ui.router.current = { sessionID: 'ses_enabled' }
+    f.context.ui.router.current = () => ({ type: 'session', sessionID: 'ses_enabled' })
   }
-  dispose()
-  expect(f.disposed()).toBe(true)
 })
 
 test('navigation while session sync awaits cannot substitute another chat model or error destination', async () => {
@@ -102,8 +101,8 @@ test('navigation while session sync awaits cannot substitute another chat model 
       return enabled(input)
     })
     const run = f.command().run('enable')
-    f.context.ui.router.current = { sessionID: 'ses_other' }
-    f.context.ui.model.current = { providerID: 'other', modelID: 'other' }
+    f.context.ui.router.current = () => ({ type: 'session', sessionID: 'ses_other' })
+    f.context.ui.model.current = () => ({ providerID: 'other', modelID: 'other' })
     finish()
     await run
     expect(messages.has('ses_other')).toBe(false)

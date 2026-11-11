@@ -17,9 +17,11 @@ The supervisor configuration is disabled. No task prompt is submitted during set
 The configured model is only a candidate until Tom approves its use.
 No global OpenCode configuration is changed.
 `examples/pilot-foreman.json` provides a project-local coordinator profile with ordered runtime permission rules.
-It denies direct edits, shell commands, ordinary subagents, and other mutation tools.
-It permits source inspection and the three Teem delegation tools.
-These runtime rules are not an operating-system sandbox and have not been tested with a live model.
+It uses trusted Build-equivalent tool access for routine development and inspection,
+with the `browser` action denied. Explicit user approval for publication, integration,
+deployment and destructive operations is an instruction-level requirement, not a
+per-command shell gate. See [Foreman access and reinstall policy](FOREMAN_ACCESS.md).
+These runtime rules are not an operating-system sandbox.
 
 The pilot's machine-local `opencode.json` starts with only the coordinator profile.
 Setup adds an exact native Foreman ID to its disabled MCP connection after creating the empty session.
@@ -36,7 +38,7 @@ Before the first model-backed run:
 3. Enable the reviewed supervisor configuration and start its service deliberately.
 4. Submit one worker task with a retained UUID, exact commit, and `src`/`tests` scope.
 5. Check native acceptance, continued Foreman responsiveness, and the actual worker result.
-6. Approve any required shell command yourself. Do not enable blanket approvals.
+6. Confirm the trusted Foreman access policy; worker shell permissions are separate.
 7. Inspect the changes before authorising a local commit and advancing a reviewer checkout.
 8. Assign one reviewer against that fixed commit and verify result delivery.
 

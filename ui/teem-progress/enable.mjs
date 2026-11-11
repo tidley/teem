@@ -53,10 +53,10 @@ export function nativeBridge(options, command, input, signal) {
 
 export async function enableCurrentChat(context, raw, invoke = nativeBridge) {
   if (typeof raw !== 'string' || raw.trim() !== 'enable') throw new Error('Use /teem enable')
-  const sessionID = context.ui.router.current?.sessionID
+  const sessionID = context.ui.router.current()?.sessionID
   if (!sessionID) throw new Error('Open the intended chat before /teem enable')
   // Snapshot the selector before sync can yield to navigation to another chat.
-  const current = context.ui.model.current
+  const current = context.ui.model.current()
   if (!current?.providerID || !current.modelID) throw new Error('Select a provider and model before /teem enable')
   const model = { providerID: current.providerID, id: current.modelID }
   if (current.variant !== undefined) model.variant = current.variant
@@ -76,13 +76,13 @@ export async function enableCurrentChat(context, raw, invoke = nativeBridge) {
 }
 
 export function installEnableCommand(context, feedback, invoke = nativeBridge) {
-  return context.keymap.layer({
+  context.keymap.layer(() => ({
     commands: [{
       id: 'teem.enable', title: 'Teem: enable this chat', group: 'Teem', palette: true,
       slash: { name: 'teem', arguments: true },
       async run(input) {
         // Both success and failure stay with the originating chat, across awaits.
-        const sessionID = context.ui.router.current?.sessionID
+        const sessionID = context.ui.router.current()?.sessionID
         try {
           const result = await enableCurrentChat(context, input, invoke)
           feedback(sessionID, `Teem enabled · ${result.project} · no work started`)
@@ -91,7 +91,7 @@ export function installEnableCommand(context, feedback, invoke = nativeBridge) {
         }
       },
     }],
-  })
+  }))
 }
 
 export async function installNativeTools(context, invoke = nativeBridge) {

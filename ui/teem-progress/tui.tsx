@@ -13,7 +13,7 @@ export default Plugin.define({
     const [projection, setProjection] = createSignal<ReturnType<typeof parseProjection>>()
     const [now, setNow] = createSignal(Date.now() / 1000)
     const [feedback, setFeedback] = createSignal<Record<string, string>>({})
-    const disposeEnable = installEnableCommand(context, (sessionID: string, message: string) => {
+    installEnableCommand(context, (sessionID: string, message: string) => {
       if (sessionID) setFeedback(previous => ({ ...previous, [sessionID]: message }))
     })
     let stopped = false
@@ -94,6 +94,6 @@ export default Plugin.define({
         </>
       },
     })
-    return () => { stopped = true; clearInterval(timer); disposeEnable() }
+    return () => { stopped = true; clearInterval(timer) }
   },
 })

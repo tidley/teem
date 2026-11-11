@@ -85,7 +85,7 @@ pub fn permissions(t: &Value) -> Value {
                 rules.push(json!({"action":"edit","resource":resource,"effect":"allow"}));
             }
         }
-        rules.push(json!({"action":"shell","resource":"*","effect":"ask"}));
+        rules.push(json!({"action":"shell","resource":"*","effect":if t["trusted_worker_shell"] == 1 {"allow"} else {"ask"}}));
     }
     for resource in [".git", ".git/**", "**/.git", "**/.git/**"] {
         rules.push(json!({"action":"edit","resource":resource,"effect":"deny"}));

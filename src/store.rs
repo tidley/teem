@@ -16,6 +16,7 @@ pub struct Store {
     pub directory: PathBuf,
     pub allowed: BTreeSet<String>,
     pub projects: Value,
+    pub trusted_worker_shell: bool,
 }
 impl Store {
     pub fn open(directory: &Path, allowed: &[String], projects: Value) -> Result<Self> {
@@ -34,9 +35,11 @@ impl Store {
                 .map(|p| absolute(&expand(p)).map(|p| p.to_string_lossy().into_owned()))
                 .collect::<Result<_>>()?,
             projects,
+            trusted_worker_shell: false,
         };
         s.transaction(||{
             s.column("tasks","runtime_model","TEXT")?;
+            s.column("tasks","trusted_worker_shell","INTEGER NOT NULL DEFAULT 0")?;
             s.column("events","transport","TEXT NOT NULL DEFAULT 'legacy-codr'")?;
             s.column("events","detail","TEXT NOT NULL DEFAULT ''")?;
             s.column("events","refresh_todos","INTEGER NOT NULL DEFAULT 0")?;
@@ -324,8 +327,8 @@ impl Store {
                 "A recorded dispatch model cannot change"
             );
             self.exec(
-                "UPDATE tasks SET runtime_model=? WHERE id=?",
-                params![canonical(m), id],
+                "UPDATE tasks SET trusted_worker_shell=CASE WHEN runtime_model IS NULL THEN ? ELSE trusted_worker_shell END,runtime_model=? WHERE id=?",
+                params![self.trusted_worker_shell && t["role"] == "worker", canonical(m), id],
             )?;
             self.task(id)
         })
