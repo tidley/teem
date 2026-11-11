@@ -99,7 +99,7 @@ export async function installNativeTools(context, invoke = nativeBridge) {
   if (!Array.isArray(definitions) || definitions.some(d => !d?.name || !d.description || !d.inputSchema)) {
     throw new Error('Teem native tool catalog unavailable')
   }
-  return context.tool.transform(editor => {
+  const registration = await context.tool.transform(editor => {
     for (const definition of definitions) editor.add({
       name: definition.name, description: definition.description, input: definition.inputSchema,
       execute: async (input, native) => ({
@@ -109,4 +109,5 @@ export async function installNativeTools(context, invoke = nativeBridge) {
       }),
     })
   })
+  return () => registration.dispose()
 }

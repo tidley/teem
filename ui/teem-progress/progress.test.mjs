@@ -117,7 +117,10 @@ test('native tool registration uses trusted invocation context not tool input, a
   let tool
   let disposed = false
   const calls = []
-  f.context.tool = { transform(edit) { edit({ add: value => { tool = value } }); return () => { disposed = true } } }
+  f.context.tool = { async transform(edit) {
+    edit({ add: value => { tool = value } })
+    return { async dispose() { disposed = true } }
+  } }
   const invoke = async (...args) => { calls.push(args); return args[1] === 'native-tools' ? definitions : { counts: {} } }
   const dispose = await installNativeTools(f.context, invoke)
   expect(tool.input).toEqual(definitions[0].inputSchema)
@@ -125,9 +128,78 @@ test('native tool registration uses trusted invocation context not tool input, a
   const input = { sessionID: 'ses_forged', agent: 'forged' }
   expect(await tool.execute(input, { sessionID: 'ses_trusted', agent: 'build', signal })).toEqual({ content: '{\n  "counts": {}\n}' })
   expect(calls[1]).toEqual([f.context.options, 'native-call', { name: 'foreman_status', arguments: input, sessionID: 'ses_trusted', agent: 'build' }, signal])
-  dispose()
+  await dispose()
   expect(disposed).toBe(true)
   await expect(installNativeTools(f.context, async () => ({}))).rejects.toThrow('catalog unavailable')
+})
+
+function deferred() {
+  let resolve, reject
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
+
+test('native cleanup waits for registration and returns the registration disposal promise', async () => {
+  const registering = deferred()
+  const registered = deferred()
+  const disposal = deferred()
+  let disposalCalls = 0
+  const registration = { dispose() {
+    expect(this).toBe(registration)
+    disposalCalls++
+    return disposal.promise
+  } }
+  const context = { tool: { async transform() {
+    registering.resolve()
+    return registered.promise
+  } } }
+  let installed = false
+  const installation = installNativeTools(context, async () => []).then(cleanup => {
+    installed = true
+    return cleanup
+  })
+  await registering.promise
+  expect(installed).toBe(false)
+  expect(disposalCalls).toBe(0)
+  registered.resolve(registration)
+  const cleanup = await installation
+  expect(typeof cleanup).toBe('function')
+  expect(disposalCalls).toBe(0)
+  const disposing = cleanup()
+  expect(disposing).toBe(disposal.promise)
+  expect(disposalCalls).toBe(1)
+  let disposed = false
+  const completion = disposing.then(() => { disposed = true })
+  await Promise.resolve()
+  expect(disposed).toBe(false)
+  disposal.resolve()
+  await completion
+  expect(disposed).toBe(true)
+})
+
+test('native cleanup propagates asynchronous disposal rejection', async () => {
+  const disposal = deferred()
+  const error = new Error('native disposal failed')
+  const context = { tool: { async transform() { return { dispose: () => disposal.promise } } } }
+  const cleanup = await installNativeTools(context, async () => [])
+  // Attach a native handler before rejecting; Bun's matcher may wait immediately.
+  const outcome = cleanup().then(() => undefined, reason => reason)
+  disposal.reject(error)
+  expect(await outcome).toBe(error)
+})
+
+test('native installation propagates registration rejection', async () => {
+  const registering = deferred()
+  const registered = deferred()
+  const error = new Error('native registration failed')
+  const context = { tool: { async transform() {
+    registering.resolve()
+    return registered.promise
+  } } }
+  const outcome = installNativeTools(context, async () => []).then(() => undefined, reason => reason)
+  await registering.promise
+  registered.reject(error)
+  expect(await outcome).toBe(error)
 })
 
 test('native bridge fails visibly for missing configuration, aborted requests, spawn, exit and JSON errors', async () => {
