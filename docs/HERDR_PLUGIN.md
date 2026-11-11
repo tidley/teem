@@ -261,7 +261,7 @@ Unlinked/native/manual text is not interpreted as an association. Agent reports
 remain claims, not qualification evidence. Bounded status, approval and native task
 IDs are unchanged. These are source contracts, not proof of installed/live UI behavior;
 the fixed local transport and adapter tests need supervisor execution. Independent
-table/user-input reporting belongs to issue #7 and is not implemented here.
+table/user-input reporting guidance is documented under [user-requested status tables](#user-requested-status-tables).
 
 ### Continuing authorised work
 
@@ -622,6 +622,23 @@ For machine-readable status:
 bin/teem --config /absolute/plugin/config.toml \
   status --foreman ses_EXACT_REGISTERED_SESSION
 ```
+
+### User-requested status tables
+
+The tracked `examples/pilot-foreman.json` reporting guidance generally asks Foreman
+to answer user-requested issue/task overviews with a concise table: **Issue/task**,
+**Current status**, **Agent working**, **Complete**, **Blocked**, and **Awaiting user
+input** when pertinent. Use authoritative current status and integration receipts;
+unknown evidence is **Unknown**, not **No**. Identify the affected task and exact
+decision/approval/permission for user blockers, separately from other blockers.
+Omit an all-empty input column and briefly say no user input is needed only when
+the evidence supports that statement. A ready candidate is not completed delivery.
+
+This is guidance, not guaranteed model behavior, a new renderer, or a status schema
+change. No live profile installation or runtime validation is implied. Completion
+notifications retain their one concise outcome/ack contract, not polling, repeated
+tables, checklist maintenance or dispatch. See [examples, evidence rules and
+limits](ISSUE7_STATUS_TABLES.md). Bounded pagination/detail rules below still apply.
 
 ### Bounded status and evidence retrieval
 
