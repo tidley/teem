@@ -19,3 +19,13 @@ allowed_checkouts = []
 # cwd = "."
 # timeout = 300
 # output_limit = 1048576
+# Optional exact inspection, in addition to the required test check. Operator opt-in
+# only: workers defer recorded checks to the supervisor; this grants no shell access.
+# HEAD includes both staged and unstaged tracked changes, unlike plain diff --check.
+# [[projects.example.checks]]
+# name = "whitespace"
+# kind = "inspect"
+# argv = ["git", "diff", "--check", "HEAD", "--"]
+# cwd = "."
+# timeout = 30
+# output_limit = 1048576

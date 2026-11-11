@@ -355,6 +355,27 @@ cache mappings or relocate existing build directories. Check logs/receipts are p
 persistent evidence, not regenerable build caches. Test exit zero is check evidence,
 not a guarantee of coverage or correctness.
 
+Initial and revision workers receive the recorded policy's exact check names, argv
+and candidate-relative cwd as data. Their guidance says **not to run or request those
+checks**: the supervisor runs them against the fixed candidate after the worker
+responds, including on revisions. Workers report additional verification needs, not
+claims that they ran deferred checks. Small lists are inline JSON. When the full list
+would exceed the 30,000-byte task prompt budget, the supervisor writes the complete
+list to `.git/teem-routine-checks.json` in that worker's checkout, mode 0400, and asks
+the worker to read all pages. Commands are never shortened to fit; the fallback text
+must also fit. Revision diagnostics are bounded at a UTF-8 byte boundary.
+
+This is guidance, not an automatic approval path or a guarantee that a model will
+never request shell access. Unmatched commands still require native human permission;
+workers must not answer cards or change policy. It does not implement persistent
+project grant inheritance. An operator may explicitly add the exact optional
+`["git", "diff", "--check", "HEAD", "--"]` inspection with `cwd = "."` alongside
+the required test check. Unlike plain `git diff --check`, it covers staged as well as
+unstaged tracked changes; new untracked files enter the supervisor's staged candidate
+before checks. Never save a wildcard `git diff *` approval or grant generic shell
+access for this purpose. The commented example is inert, not live configuration.
+See [issue #5 qualification](ISSUE5_ROUTINE_CHECKS.md) for scope and verification limits.
+
 For an authorised task, Foreman calls `foreman_workflow` with issue reference, project alias, scope and
 acceptance criteria, then remains available for chat. The exact native Foreman project
 must match the configured source. The supervisor chooses clean source HEAD and creates
