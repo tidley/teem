@@ -23,6 +23,50 @@ pub fn compatible_policy(current: &Value, admitted: &Value) -> bool {
     current == admitted
 }
 
+fn reference_paths(v: &Value, project: &Path) -> Result<Value> {
+    let paths = v
+        .as_array()
+        .context("reference_paths must be an explicit path list")?;
+    ensure!(paths.len() <= 32, "Use at most 32 reference paths");
+    let mut result = Vec::new();
+    for value in paths {
+        let raw = value
+            .as_str()
+            .context("Reference paths must be absolute strings")?;
+        let literal = |p: &str| {
+            !p.chars()
+                .any(|c| c.is_control() || "*?[]{}!\\()|".contains(c))
+        };
+        ensure!(
+            Path::new(raw).is_absolute() && literal(raw),
+            "Reference paths must be absolute literal paths, not patterns"
+        );
+        // Unlike absolute(), canonicalize requires an existing target. Freeze
+        // both the resolved path and its type; session identity must never depend
+        // on a later filesystem lookup.
+        let path = Path::new(raw)
+            .canonicalize()
+            .context("Reference path must exist")?;
+        let name = path.to_str().context("Reference path must be UTF-8")?;
+        ensure!(
+            literal(name)
+                && path.components().count() > 2
+                && path != absolute(&home())?
+                && !project.starts_with(&path),
+            "Reference paths cannot be broad roots, home, project ancestors or patterns"
+        );
+        let metadata = path.metadata()?;
+        ensure!(
+            metadata.is_file() || metadata.is_dir(),
+            "Reference must be a file or directory"
+        );
+        result.push(json!({"path":name,"kind":if metadata.is_dir(){"directory"}else{"file"}}));
+    }
+    result.sort_by_key(|p| text(p, "path"));
+    result.dedup();
+    Ok(json!(result))
+}
+
 pub fn normalise_projects(v: &Value) -> Result<Value> {
     let mut result = serde_json::Map::new();
     for (name, p) in v
@@ -38,7 +82,8 @@ pub fn normalise_projects(v: &Value) -> Result<Value> {
                 && p.as_object().is_some_and(|m| m.keys().all(|k| [
                     "path",
                     "checks",
-                    "max_revisions"
+                    "max_revisions",
+                    "reference_paths"
                 ]
                 .contains(&k.as_str()))),
             "Invalid project policy fields"
@@ -59,10 +104,15 @@ pub fn normalise_projects(v: &Value) -> Result<Value> {
             array(&checks).iter().any(|c| c["kind"] == "test"),
             "At least one approved test check is required"
         );
-        result.insert(
-            name.clone(),
-            json!({"path":absolute(&path)?,"checks":checks,"max_revisions":max}),
-        );
+        let path = absolute(&path)?;
+        let mut policy = json!({"path":path,"checks":checks,"max_revisions":max});
+        if let Some(paths) = p.get("reference_paths") {
+            let paths = reference_paths(paths, &path)?;
+            if !array(&paths).is_empty() {
+                policy["reference_paths"] = paths;
+            }
+        }
+        result.insert(name.clone(), policy);
     }
     Ok(Value::Object(result))
 }

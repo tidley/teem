@@ -252,6 +252,21 @@ impl Store {
             );
             let workflow =
                 self.workflow(req["workflow_id"].as_str().context("Invalid workflow ID")?)?;
+            if role == "worker" {
+                if let Some(paths) = workflow["policy"].get("reference_paths") {
+                    ensure!(
+                        req.get("reference_paths")
+                            .is_none_or(|value| value == paths),
+                        "Managed worker cannot switch its approved reference paths"
+                    );
+                    req["reference_paths"] = paths.clone();
+                } else {
+                    ensure!(
+                        req.get("reference_paths").is_none(),
+                        "No approved reference paths"
+                    );
+                }
+            }
             if let Some(issue) = workflow["request"].get("issue") {
                 ensure!(
                     req.get("issue").is_none_or(|value| value == issue),
@@ -260,6 +275,10 @@ impl Store {
                 req["issue"] = issue.clone();
             }
         }
+        ensure!(
+            req.get("reference_paths").is_none() || (managed && role == "worker"),
+            "Reference paths require an approved managed worker policy"
+        );
         if req.get("native_todos").is_some() {
             ensure!(
                 managed && req["native_todos"] == true,
