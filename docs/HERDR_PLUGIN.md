@@ -69,6 +69,21 @@ The startup hook starts only an already configured service. Missing configuratio
 An enabled configuration without an installed unit produces a visible service error.
 Herdr startup hooks are not daemon supervisors. systemd owns the supervisor process.
 
+## Enable the current native chat
+
+The optional TUI command `/teem enable` binds the exact current top-level chat,
+Herdr terminal, native agent/project/directory and selected model to one configured
+managed-project alias. Repeating it is idempotent; it starts no work or service and
+does not change permissions. Configure the TUI and native server bridge with
+absolute `executable` and `config` options. The server uses trusted native tool
+context rather than rebinding location-global MCP. See
+[issue #1 setup, restrictions and qualification limits](ISSUE1_ENABLEMENT.md).
+
+Native delegation is managed-only: `foreman_submit` is omitted/rejected, and both
+workflow admission and reconciliation of retained sources require the enabled
+project alias. Evidence inspection stays available. Existing fixed MCP remains
+independently bound legacy compatibility as documented below.
+
 ## Foreman tools
 
 Configure a local MCP server for the intended Foreman runtime. Merge this example into existing configuration.
@@ -462,7 +477,9 @@ preserving other settings/plugins (use your actual absolute paths):
   "plugins": [
     "-opencode.sidebar.todo",
     { "package": "/absolute/teem/ui/teem-progress", "options": {
-      "stateFile": "/absolute/private/state_dir/progress.json"
+       "stateFile": "/absolute/private/state_dir/progress.json",
+       "executable": "/absolute/teem/bin/teem",
+       "config": "/absolute/private/config.toml"
     } }
   ]
 }

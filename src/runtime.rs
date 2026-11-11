@@ -566,7 +566,10 @@ pub fn tick(store: &Store, runtime: &dyn Runtime) -> Result<()> {
             continue;
         }
         let result = (|| -> Result<()> {
-            let task = store.record_model(&text(&t, "id"), &runtime.dispatch_model(&t)?)?;
+            let task = store.record_model(
+                &text(&t, "id"),
+                &crate::enable::dispatch_model(store, runtime, &t)?,
+            )?;
             if let Some(w) = task["request"]["workflow_id"].as_str() {
                 if crate::control::paused(store, w)? {
                     store.update(

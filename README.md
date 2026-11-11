@@ -14,6 +14,9 @@ Teem and [Codr](https://github.com/tidley/codr)/[White Noise](https://github.com
 Teem does not import, call, configure, start, or restart [Codr](https://github.com/tidley/codr).
 Without Teem, an ordinary agent conversation works as before.
 With Teem, an explicitly bound Foreman can delegate and receive native completion events.
+The optional `/teem enable` command binds the exact current Herdr/OpenCode chat
+without starting work or changing permissions. See
+[native enablement setup and qualification limits](docs/ISSUE1_ENABLEMENT.md).
 
 ## Status
 
@@ -25,6 +28,7 @@ No paid worker run is part of repository setup.
 
 - `herdr-plugin.toml`: Teem actions, startup hook, and transient status popup.
 - `src/plugin.rs`: [Herdr](https://github.com/herdrdev/herdr) commands, fixed-binding [MCP](https://github.com/modelcontextprotocol/modelcontextprotocol) tools, and service unit output.
+- `src/enable.rs`: explicit native chat receipts, per-call authority and model capture.
 - `src/operator.rs`: explicit candidate integration, verified commit receipts and bounded Foreman color updates.
 - `src/control.rs`: durable user stop requests, native interruption and preserved handoff state.
 - `src/store.rs`: [SQLite](https://sqlite.org/src/) tasks, per-task 2+2 limits, and exclusive checkout ownership.

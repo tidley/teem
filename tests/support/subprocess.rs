@@ -36,6 +36,9 @@ fn main() {
             std::io::stdout().flush().unwrap();
         }
         Some("arguments") => println!("{}", serde_json::to_string(&args[1..]).unwrap()),
+        Some("agent") if args == ["agent", "get", "issue1-pane"] => {
+            println!("{}", std::env::var("TEEM_FIXTURE_HERDR_RESULT").unwrap());
+        }
         _ => std::process::exit(2),
     }
 }

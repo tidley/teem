@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path'
 import { Plugin } from '@opencode/plugin/tui'
 import { createMemo, createSignal, For, Show } from 'solid-js'
 import { nativeTodos, parseProjection, selectProgress } from './progress.mjs'
+import { installEnableCommand } from './enable.mjs'
 
 export default Plugin.define({
   id: 'local.teem.progress',
@@ -11,6 +12,10 @@ export default Plugin.define({
     if (typeof file !== 'string' || !isAbsolute(file)) throw new Error('Teem needs an absolute stateFile')
     const [projection, setProjection] = createSignal<ReturnType<typeof parseProjection>>()
     const [now, setNow] = createSignal(Date.now() / 1000)
+    const [feedback, setFeedback] = createSignal<Record<string, string>>({})
+    const disposeEnable = installEnableCommand(context, (sessionID: string, message: string) => {
+      if (sessionID) setFeedback(previous => ({ ...previous, [sessionID]: message }))
+    })
     let stopped = false
     let reading = false
     async function refresh() {
@@ -43,7 +48,11 @@ export default Plugin.define({
         const remaining = createMemo(() => groups().flatMap(g => g.rows).filter(t => t.status === 'pending' || t.status === 'in_progress').length)
         const reported = createMemo(() => groups().some(g => g.rows.some(t => t.reported)))
         const theme = context.theme
-        return <Show when={passive() || list().length > 0}>
+        return <>
+          <Show when={feedback()[props.sessionID]}>{message =>
+            <text wrapMode="word" fg={theme.text.base}>{message()}</text>
+          }</Show>
+          <Show when={passive() || list().length > 0}>
           <box>
             <text fg={theme.text.base} onMouseDown={() => setOpen(!open())}>
               {open() ? '▾ ' : '▸ '}{passive() ? 'Teem · current work' : 'Todo'} ({remaining()})
@@ -81,9 +90,10 @@ export default Plugin.define({
               </box>}</Show>
             </Show>
           </box>
-        </Show>
+          </Show>
+        </>
       },
     })
-    return () => { stopped = true; clearInterval(timer) }
+    return () => { stopped = true; clearInterval(timer); disposeEnable() }
   },
 })

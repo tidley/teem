@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{BufRead, Write},
+    io::{BufRead, Read, Write},
     os::fd::AsRawFd,
     path::{Path, PathBuf},
     process::Command,
@@ -262,7 +262,7 @@ pub fn service_unit(config: &Path) -> Result<String> {
         "[Unit]\nDescription=Teem headless task supervisor\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={exe} --config {cfg} serve\nRestart=on-failure\nRestartSec=5\nUMask=0077\nTimeoutStopSec=20\n\n[Install]\nWantedBy=default.target\n"
     ))
 }
-pub fn bind(s: &Store) -> Result<Value> {
+fn focused_agent() -> Result<Value> {
     let pane = std::env::var("HERDR_PANE_ID").context("Bind inside focused Herdr pane")?;
     ensure!(
         std::env::var("HERDR_ENV").ok().as_deref() == Some("1") && !pane.is_empty(),
@@ -275,7 +275,10 @@ pub fn bind(s: &Store) -> Result<Value> {
         out.status.success() && out.stdout.len() <= 1048576,
         "Cannot inspect focused Herdr agent"
     );
-    let response: Value = serde_json::from_slice(&out.stdout)?;
+    Ok(serde_json::from_slice(&out.stdout)?)
+}
+pub fn bind(s: &Store) -> Result<Value> {
+    let response = focused_agent()?;
     let a = &response["result"]["agent"];
     let native = &a["agent_session"];
     ensure!(
@@ -465,10 +468,26 @@ pub fn main(args: Vec<String>) -> Result<()> {
         return Ok(());
     }
     ensure!(
-        ["bind", "status", "mcp", "board", "serve", "service-start"].contains(&command.as_str()),
+        [
+            "bind",
+            "status",
+            "mcp",
+            "board",
+            "serve",
+            "service-start",
+            "enable-chat",
+            "native-tools",
+            "native-call",
+        ]
+        .contains(&command.as_str()),
         "Unknown command"
     );
     let c = load(&config)?;
+    if command == "native-tools" {
+        ensure!(rest.is_empty(), "native-tools accepts no arguments");
+        println!("{}", crate::enable::tools());
+        return Ok(());
+    }
     if command == "serve" {
         return serve(&config, &c);
     }
@@ -488,6 +507,21 @@ pub fn main(args: Vec<String>) -> Result<()> {
     }
     let s = open(&c)?;
     match command.as_str() {
+        "enable-chat" | "native-call" => {
+            ensure!(rest.is_empty(), "Native bridge accepts JSON on stdin only");
+            let mut bytes = Vec::new();
+            std::io::Read::take(std::io::stdin(), 65537).read_to_end(&mut bytes)?;
+            ensure!(bytes.len() <= 65536, "Native bridge input too large");
+            let request: Value = serde_json::from_slice(&bytes)?;
+            let runtime = OpenCode::new(&expand(&text(&c, "registry")), &text(&c, "model"))
+                .context("Configure an available native runtime registry and fallback model")?;
+            let result = if command == "enable-chat" {
+                crate::enable::enable(&s, &runtime, &request, &focused_agent()?)?
+            } else {
+                crate::enable::call(&s, &runtime, &request)?
+            };
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
         "bind" => println!("{}", bind(&s)?),
         "status" | "mcp" => {
             ensure!(

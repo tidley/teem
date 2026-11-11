@@ -3,5 +3,5 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": { "./tui": "./tui.tsx" }
+  "exports": { "./tui": "./tui.tsx", "./server": "./server.ts" }
 }
