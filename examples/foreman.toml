@@ -16,6 +16,10 @@ allowed_checkouts = []
 # [projects.example]
 # path = "/absolute/project/root"
 # max_revisions = 3 # One initial implementation plus up to three corrective rounds.
+# Optional approved external reference subtree for new managed workers only.
+# Absolute existing literal paths, never broad roots or globs. No shell/edit authority.
+# reference_paths = ["/absolute/reference/library"]
+# Exact-file resources need native contract qualification; see docs/ISSUE12_REFERENCES.md.
 # [[projects.example.checks]]
 # name = "tests"
 # kind = "test"

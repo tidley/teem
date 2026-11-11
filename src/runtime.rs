@@ -77,6 +77,19 @@ pub fn permissions(t: &Value) -> Value {
         rules.push(
             json!({"action":"external_directory","resource":"/mnt/fastbuild/**","effect":"allow"}),
         );
+        for reference in array(&t["request"]["reference_paths"]) {
+            let Some(path) = reference["path"].as_str() else {
+                continue;
+            };
+            let resource = match reference["kind"].as_str() {
+                Some("directory") => format!("{path}/**"),
+                // Never widen an exact file to its parent or siblings. Hosts
+                // requesting directory resources for file reads will deny it.
+                Some("file") => path.to_owned(),
+                _ => continue,
+            };
+            rules.push(json!({"action":"external_directory","resource":resource,"effect":"allow"}));
+        }
         for p in array(&t["request"]["scope"]) {
             for resource in [
                 p.as_str().unwrap_or("").to_owned(),

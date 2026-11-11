@@ -21,6 +21,7 @@ table-driven; test counts are not a one-to-one translation of the old suite.
 | Current work, readable titles, pending verdicts, latest results and no backfilled events | `native.rs` workflow-progress tests |
 | CLI installation, service unit, disabled startup, MCP protocols and ownership | `rust_contracts.rs`, `regressions.rs` plugin tests |
 | Legacy database and canonical digest compatibility | inert `fixtures/*.json` and `fixtures/legacy-state.sql` |
+| Project-local external references, literal canonical paths, retained policy and unchanged edit/shell/reviewer rules | `issue12_references.rs` (payload/state contracts; native tool matching still requires qualification) |
 
 The numeric fixture contains 1,999 finite legacy values and their expected
 encoding. Its expectations are data, not generated at test time by an old

@@ -344,6 +344,14 @@ output_limit = 1048576
 ```
 
 The operator must approve these commands and trust the project's test/build scripts.
+An optional project-local `reference_paths` list approves external references for
+new managed implementation workers only. It does not widen edit scope or change
+shell/reviewer permissions. Paths must be existing absolute literals; canonical
+targets and file/directory types are captured in the policy. Omitted or empty lists
+preserve the old policy and permissions. Exact-file native tool semantics still
+need qualification; no parent-directory fallback is granted. See
+[reference configuration and qualification limits](ISSUE12_REFERENCES.md).
+
 If omitted, `max_revisions` defaults to three. It permits one initial implementation
 plus three corrective implementation rounds, not three total attempts. Each new
 candidate must pass its approved checks and two exact-candidate reviews. An explicit
