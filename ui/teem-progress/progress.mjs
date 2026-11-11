@@ -97,12 +97,12 @@ export function sidebarGroups(progress) {
     if (reported) {
       if (item.status === 'completed' || (bounded(item.task_id, 128) && ended.has(`${group.id}/${item.task_id}`))) return
       if (kind !== 'reported') name = name.replace(/^.*? · reported: /, '')
-      group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: withIssue(group.issue, short(`Reported: ${withoutIssue(group.issue, name || item.content)}`, 56)), status: item.status, reported: true })
+      group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: short(`Reported: ${withoutIssue(group.issue, name || item.content)}`, 56), status: item.status, reported: true })
       return
     }
     if (kind === 'implementation' && item.status === 'completed') return
     if (!kind || kind === 'reported' || !detail) {
-      group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: withIssue(group.issue, clean(item.content)), status: item.status })
+      group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: clean(withoutIssue(group.issue, item.content)), status: item.status })
       return
     }
     if (kind === 'check') name = checkNames.get(name.toLowerCase()) ?? name
@@ -120,7 +120,7 @@ export function sidebarGroups(progress) {
     else if (detail === 'starting') state = 'starting'
     else if (detail === 'native input accepted') state = 'accepted'
     else if (detail === 'interrupted') state = 'interrupted'
-    group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: withIssue(group.issue, `${short(withoutIssue(group.issue, name), 28)} · ${state}`), status })
+    group.rows.push({ id: bounded(item.id, 256) ? item.id : `row-${index}`, content: `${short(withoutIssue(group.issue, name), 28)} · ${state}`, status })
   })
   return groups
 }

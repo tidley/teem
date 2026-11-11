@@ -159,7 +159,7 @@ const selectedItems = (items, extra = {}) => selectProgress(parseProjection({ ..
   sessions: { ses_foreman: { todos: items.map(({ content, status }) => ({ content, status })), items, ...extra } },
 }), 'ses_foreman', 101)
 
-test('verified issue prefixes heading and all compact child kinds once without expanding groups', () => {
+test('verified issue appears in the heading, not redundant prefixes on compact children', () => {
   const issue = 'tidley/teem#8'
   const h = { ...heading(), issue }
   h.label = `${issue} ${h.label}`
@@ -178,13 +178,82 @@ test('verified issue prefixes heading and all compact child kinds once without e
   const group = selected.groups[0]
   expect(group.title).toBe(`${issue} Compact sidebar`)
   expect(group.rows).toHaveLength(6)
-  for (const content of [group.title, ...group.rows.map(r => r.content)]) {
-    expect(content.startsWith(issue + ' ')).toBe(true)
-    expect(content.split(issue)).toHaveLength(2)
-  }
-  expect(group.rows[1].content).toBe(`${issue} Tests · passed`)
-  expect(group.rows[4].content).toBe(`${issue} Reported: Inspect changes`)
+  expect(group.rows.map(r => r.content)).toEqual([
+    'Implementation · running', 'Tests · passed', 'Review · correctness · pending',
+    'Review · tests/scope · running', 'Reported: Inspect changes',
+    'teem · Compact sidebar · Unknown stage — not started',
+  ])
+  expect(group.rows.map(r => r.status)).toEqual(items.slice(1).map(r => r.status))
+  expect(group.rows[4].reported).toBe(true)
+  expect(selected.todos).toEqual(items.map(({ content, status }) => ({ content, status })))
   expect(items).toEqual(before)
+})
+
+test('repeated matching leading references are removed from every child kind only', () => {
+  const issue = 'tidley/teem#13'
+  const prefix = `${issue} ${issue} `
+  const h = { ...heading('repeated', prefix + 'Cleanup'), issue }
+  const items = [h,
+    row(h, 'worker', prefix + 'Implementation', 'in_progress', 'running', 'implementation'),
+    row(h, 'check', prefix + 'Tests', 'completed', 'passed (exit 0)', 'check'),
+    row(h, 'review', prefix + 'Review', 'pending', 'verdict pending', 'review'),
+    row(h, 'claim', prefix + 'Inspect changes', 'in_progress', 'agent-reported progress only', 'reported', { source: 'agent-reported' }),
+    row(h, 'fallback', 'Unknown stage', 'cancelled', 'failed; inspect full evidence', undefined, {
+      content: prefix + 'Worker attribution — failed; inspect full evidence',
+    }),
+  ]
+  const group = selectedItems(items).groups[0]
+  expect(group.title).toBe(`${issue} Cleanup`)
+  expect(group.rows.map(r => r.content)).toEqual([
+    'Implementation · running', 'Tests · passed', 'Review · verdict pending',
+    'Reported: Inspect changes', 'Worker attribution — failed; inspect full evidence',
+  ])
+})
+
+test('multiple issue groups keep order and identity while preserving different and embedded references', () => {
+  const first = { ...heading('aaaaaaaa-0000', 'Same'), issue: 'tidley/teem#13' }
+  const second = { ...heading('aaaaaaaa-1111', 'Same'), issue: 'tidley/teem#12' }
+  const items = [first,
+    row(first, 'other', 'tidley/teem#12 Tests', 'pending', 'not started', 'check'),
+    row(first, 'embedded', 'See tidley/teem#13', 'pending', 'not started', 'review'),
+    row(first, 'claim', 'Compare tidley/teem#12', 'in_progress', 'agent-reported progress only', 'reported', { source: 'agent-reported' }),
+    second, row(second, 'worker', 'Implementation', 'in_progress', 'running', 'implementation'),
+  ]
+  const receipt = { workflow_id: 'earlier', state: 'ready', title: 'tidley/teem#13 Earlier', content: 'tidley/teem#13 Not integrated' }
+  const selected = selectedItems(items, { latest_result: receipt })
+  expect(selected.groups.map(g => [g.id, g.title])).toEqual([
+    [first.workflow_id, 'tidley/teem#13 Same'], [second.workflow_id, 'tidley/teem#12 Same'],
+  ])
+  expect(new Set(selected.groups.map(g => g.description)).size).toBe(2)
+  expect(selected.groups[0].rows.map(r => [r.id, r.content])).toEqual([
+    ['other', 'tidley/teem#12 Tests · pending'], ['embedded', 'See tidley/teem#13 · pending'],
+    ['claim', 'Reported: Compare tidley/teem#12'],
+  ])
+  expect(selected.groups[1].rows[0].content).toBe('Implementation · running')
+  expect(selected.latest_result).toEqual(receipt)
+})
+
+test('fallback rows retain attribution and issue-looking free text beyond the matching leading prefix', () => {
+  const issue = 'tidley/teem#13'
+  const h = { ...heading(), issue }
+  const texts = [
+    `${issue} ${issue} Worker attribution — see ${issue}`,
+    'tidley/teem#12 Other attribution — pending',
+    `Investigate ${issue} regression`,
+    `${issue}: meaningful punctuation`,
+    `${issue}0 Different issue`,
+  ]
+  const items = [h, ...texts.map((content, index) => ({
+    id: `fallback-${index}`, workflow_id: h.workflow_id, content, status: 'pending',
+  }))]
+  expect(selectedItems(items).groups[0].rows.map(r => r.content)).toEqual([
+    `Worker attribution — see ${issue}`, ...texts.slice(1),
+  ])
+  const manual = { content: `${issue} Manual attribution`, status: 'pending', source: 'foreman-plan' }
+  const ungrouped = { ...manual, workflow_id: 'missing', source: 'supervisor' }
+  expect(selectedItems([h, manual, ungrouped]).groups.slice(1).map(g => g.rows[0].content)).toEqual([
+    manual.content, ungrouped.content,
+  ])
 })
 
 test('issue-looking native/manual titles and invalid associations are never inferred', () => {
@@ -202,6 +271,24 @@ test('issue-looking native/manual titles and invalid associations are never infe
     state: { status: 'completed', input: { todos: [manual] } } }] }])).toEqual([manual])
 })
 
+test('missing or invalid structured issues cannot strip issue-looking child text', () => {
+  const text = 'tidley/teem#13 Inspect'
+  for (const issue of [undefined, '#13', 'tidley/teem#0', 'Tidley/teem#13', null]) {
+    const h = { ...heading(), issue }
+    const group = selectedItems([h,
+      row(h, 'worker', text, 'in_progress', 'running', 'implementation'),
+      row(h, 'check', text, 'pending', 'not started', 'check'),
+      row(h, 'review', text, 'pending', 'not started', 'review'),
+      row(h, 'claim', text, 'in_progress', 'agent-reported progress only', 'reported', { source: 'agent-reported' }),
+      { workflow_id: h.workflow_id, content: text, status: 'pending' },
+    ]).groups[0]
+    expect(group.title).toBe('Compact sidebar')
+    expect(group.rows.map(r => r.content)).toEqual([
+      `${text} · running`, `${text} · pending`, `${text} · pending`, `Reported: ${text}`, text,
+    ])
+  }
+})
+
 test('long canonical references remain complete while compact stage labels stay short', () => {
   const issue = `${'a'.repeat(39)}/${'b'.repeat(100)}#18446744073709551615`
   const h = { ...heading('long', '🦀'.repeat(100)), issue }
@@ -209,7 +296,7 @@ test('long canonical references remain complete while compact stage labels stay 
   h.content = `${issue} ${h.content}`
   const selected = selectedItems([h, row(h, 'check', 'tests', 'pending', 'not run yet', 'check')])
   expect(selected.groups[0].title.startsWith(issue + ' ')).toBe(true)
-  expect(selected.groups[0].rows[0].content).toBe(`${issue} Tests · pending`)
+  expect(selected.groups[0].rows[0].content).toBe('Tests · pending')
 })
 
 test('compact rows show a workflow title/project once and short check/review labels', () => {
