@@ -153,9 +153,19 @@ fn filters_apply_to_every_related_collection_and_task_filter_selects_its_workflo
 #[test]
 fn detail_chunks_reconstruct_full_history_and_strings_without_state_changes() {
     let f = Fixture::new();
-    f.workflow("a", "blocked", evidence());
+    // Exercise multiple rounds and pages without re-encoding forty oversized
+    // rounds on every page. Large-history summary bounds are tested separately.
+    let mut history = evidence();
+    let rounds = history["rounds"].as_array_mut().unwrap();
+    rounds.truncate(3);
+    for (i, round) in rounds.iter_mut().enumerate() {
+        round["snapshot"]["sha256"] = json!(format!("candidate_{i}"));
+    }
+    f.workflow("a", "blocked", history);
     f.task("a_task", "a", "worker", "failed");
     let expected = canonical(&f.store.workflow("a").unwrap());
+    assert!(expected.len() > 4096);
+    let expected_sha = teem::common::sha(expected.as_bytes());
     let before = f.store.query("SELECT * FROM events", []).unwrap();
     let mut offset = 0;
     let mut full = String::new();
@@ -163,8 +173,9 @@ fn detail_chunks_reconstruct_full_history_and_strings_without_state_changes() {
         let page =
             f.status(json!({"mode":"detail","workflow_id":"a","offset":offset,"limit":4096}));
         full.push_str(page["chunk"].as_str().unwrap());
-        assert_eq!(page["sha256"], teem::common::sha(expected.as_bytes()));
+        assert_eq!(page["sha256"], expected_sha);
         if let Some(next) = page["next_offset"].as_u64() {
+            assert!(next > offset && next <= expected.len() as u64);
             offset = next;
         } else {
             break;
@@ -179,7 +190,7 @@ fn detail_chunks_reconstruct_full_history_and_strings_without_state_changes() {
             .as_array()
             .unwrap()
             .len(),
-        40
+        3
     );
 }
 

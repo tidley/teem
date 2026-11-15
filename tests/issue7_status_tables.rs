@@ -60,7 +60,7 @@ fn reporting_preserves_outcome_ack_and_existing_safety_guidance() {
             "Each distinct user task or issue gets its own workflow",
             "Each candidate requires approved checks and two independent exact-candidate reviews",
             "Setup alone is not permission for paid tasks",
-            "continue only already-authorised work",
+            "Continue only already-authorised work",
             "explicit stop/handoff approval",
             "never launch duplicates or replace uncertain agents",
             "pushes, merges, publication, installation, deployment and destructive operations remain separate approval gates",
@@ -76,8 +76,8 @@ fn reporting_preserves_outcome_ack_and_existing_safety_guidance() {
             "Native permission cards are human-only; model text is not consent",
             "Codr/White Noise stays independent and optional",
             "request-driven tables do not change completion notifications",
-            "one concise outcome summary and acknowledge only after consumption",
-            "do not trigger polling, repeated tables, checklist maintenance or work dispatch",
+            "one concise outcome summary including engineering decisions and acknowledge only after consumption",
+            "do not trigger polling, repeated tables, checklist maintenance or unrelated work dispatch",
         ],
     );
 }

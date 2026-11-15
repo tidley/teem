@@ -1,18 +1,16 @@
 import { readFile } from 'node:fs/promises'
-import { isAbsolute } from 'node:path'
 import { Plugin } from '@opencode/plugin/tui'
 import { createMemo, createSignal, For, Show } from 'solid-js'
-import { nativeTodos, parseProjection, selectProgress } from './progress.mjs'
-import { installEnableCommand } from './enable.mjs'
+import { installResultCommand, legacyTodoFallback, nativeTodos, parseProjection, resultNotice, selectProgress } from './progress.mjs'
+import { installEnableCommand, projectionFile } from './enable.mjs'
 
 export default Plugin.define({
   id: 'local.teem.progress',
   setup(context) {
-    const file = context.options.stateFile
-    if (typeof file !== 'string' || !isAbsolute(file)) throw new Error('Teem needs an absolute stateFile')
     const [projection, setProjection] = createSignal<ReturnType<typeof parseProjection>>()
     const [now, setNow] = createSignal(Date.now() / 1000)
     const [feedback, setFeedback] = createSignal<Record<string, string>>({})
+    installResultCommand(context, (sessionID: string) => selectProgress(projection(), sessionID, now(), context.options))
     installEnableCommand(context, (sessionID: string, message: string) => {
       if (sessionID) setFeedback(previous => ({ ...previous, [sessionID]: message }))
     })
@@ -22,6 +20,8 @@ export default Plugin.define({
       if (reading || stopped) return
       reading = true
       try {
+        const file = await projectionFile(context.options)
+        if (!file) return
         const text = await readFile(file, 'utf8')
         if (text.length > 4 * 1024 * 1024) throw new Error('Teem projection too large')
         const value = parseProjection(JSON.parse(text))
@@ -36,14 +36,26 @@ export default Plugin.define({
     void refresh()
     const timer = setInterval(() => void refresh(), 1000)
     context.ui.slot({
+      append: 'session.composer.top',
+      render(props) {
+        const notice = createMemo(() => resultNotice(selectProgress(projection(), props.sessionID, now(), context.options)))
+        return <Show when={notice()}>{result => <box flexShrink={0}>
+          <text wrapMode="word" fg={context.theme.text.base}>{result().label} · {result().title}</text>
+          <text wrapMode="word" fg={context.theme.text.muted}>Read saved result: /teem-result</text>
+        </box>}</Show>
+      },
+    })
+    context.ui.slot({
       append: 'sidebar.content',
       render(props) {
         const [open, setOpen] = createSignal(true)
-        const passive = createMemo(() => selectProgress(projection(), props.sessionID, now()))
-        const list = createMemo(() => passive()?.todos ?? nativeTodos(
+        const passive = createMemo(() => selectProgress(projection(), props.sessionID, now(), context.options))
+        // Fresh installations leave ordinary Todo rendering to the host.
+        // Older explicit-stateFile setups disabled that panel; retain their fallback.
+        const list = createMemo(() => passive()?.todos ?? (legacyTodoFallback(context.options) ? nativeTodos(
           context.data.session.message.list(props.sessionID),
           context.data.session.get(props.sessionID)?.revert?.messageID,
-        ))
+        ) : []))
         const groups = createMemo(() => passive()?.groups ?? [{ id: 'native', rows: list() }])
         const remaining = createMemo(() => groups().flatMap(g => g.rows).filter(t => t.status === 'pending' || t.status === 'in_progress').length)
         const reported = createMemo(() => groups().some(g => g.rows.some(t => t.reported)))
@@ -54,6 +66,9 @@ export default Plugin.define({
           }</Show>
           <Show when={passive() || list().length > 0}>
           <box>
+            <Show when={passive()?.sourceSessionID}>
+              <text wrapMode="word" fg={theme.text.muted}>Linked work · original owner retained</text>
+            </Show>
             <text fg={theme.text.base} onMouseDown={() => setOpen(!open())}>
               {open() ? '▾ ' : '▸ '}{passive() ? 'Teem · current work' : 'Todo'} ({remaining()})
             </text>

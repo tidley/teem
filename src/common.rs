@@ -313,6 +313,71 @@ pub fn git(
     input: Option<&[u8]>,
     index: Option<&Path>,
 ) -> Result<Vec<u8>> {
+    git_command(path, args, input, index, true, &[])
+}
+
+/// Only explicit operator commits use the user's identity and signing settings.
+/// Managed checkout inspection remains isolated from global/system Git config.
+pub struct OperatorCommitConfig(Vec<(String, String)>);
+
+pub fn git_commit_identity(path: &Path) -> Result<OperatorCommitConfig> {
+    let config = operator_commit_config(path)?;
+    for identity in ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"] {
+        git_command(path, &["var", identity], None, None, true, &config)?;
+    }
+    Ok(OperatorCommitConfig(config))
+}
+
+pub fn git_commit(path: &Path, message: &str, config: &OperatorCommitConfig) -> Result<()> {
+    ensure!(
+        operator_commit_config(path)? == config.0,
+        "Operator Git identity/signing configuration changed after preflight; inspect source without retrying"
+    );
+    git_command(
+        path,
+        &["commit", "-m", message],
+        None,
+        None,
+        true,
+        &config.0,
+    )?;
+    Ok(())
+}
+
+fn operator_commit_config(path: &Path) -> Result<Vec<(String, String)>> {
+    // Import only identity/signing settings. Global worktree, filter, hook and
+    // other configuration must not change the checkout validated in isolation.
+    let pattern = r"^(user\.(name|email|signingkey|useconfigonly)|author\.(name|email)|committer\.(name|email)|commit\.gpgsign|gpg\.(format|program|openpgp\.program|x509\.program|ssh\.(program|defaultkeycommand|allowedsignersfile|revocationfile)))$";
+    let bytes = git_command(
+        path,
+        &["config", "--includes", "--null", "--get-regexp", pattern],
+        None,
+        None,
+        false,
+        &[],
+    )?;
+    let config = String::from_utf8(bytes)
+        .context("Operator Git identity/signing configuration must be UTF-8")?;
+    let mut args = Vec::new();
+    for entry in config.split_terminator('\0') {
+        let (key, value) = match entry.split_once('\n') {
+            Some(pair) => pair,
+            None if ["commit.gpgsign", "user.useconfigonly"].contains(&entry) => (entry, "true"),
+            None => bail!("Operator Git identity/signing entry requires a value"),
+        };
+        args.push((key.to_owned(), value.to_owned()));
+    }
+    Ok(args)
+}
+
+fn git_command(
+    path: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    index: Option<&Path>,
+    isolated_config: bool,
+    operator_config: &[(String, String)],
+) -> Result<Vec<u8>> {
     let mut cmd = Command::new("git");
     cmd.args([
         "-c",
@@ -327,9 +392,28 @@ pub fn git(
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::null());
-    clean_env(&mut cmd);
+    if isolated_config {
+        clean_env(&mut cmd);
+    } else {
+        // Discard ambient Git overrides, but retain normal HOME/system config
+        // only for reading the allowed operator identity/signing settings.
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("GIT_") {
+                cmd.env_remove(key);
+            }
+        }
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+    }
     if let Some(index) = index {
         cmd.env("GIT_INDEX_FILE", index);
+    }
+    // Standard Git config environment keeps values out of argv and logs.
+    if !operator_config.is_empty() {
+        cmd.env("GIT_CONFIG_COUNT", operator_config.len().to_string());
+        for (i, (key, value)) in operator_config.iter().enumerate() {
+            cmd.env(format!("GIT_CONFIG_KEY_{i}"), key)
+                .env(format!("GIT_CONFIG_VALUE_{i}"), value);
+        }
     }
     process_group(&mut cmd);
     let mut child = cmd
@@ -366,7 +450,12 @@ pub fn git(
         .join()
         .map_err(|_| anyhow::anyhow!("Git reader failed"))??;
     ensure!(
-        status.success() && bytes.len() <= 64 * 1024 * 1024,
+        (status.success()
+            || (!isolated_config
+                && args.first() == Some(&"config")
+                && status.code() == Some(1)
+                && bytes.is_empty()))
+            && bytes.len() <= 64 * 1024 * 1024,
         "Managed Git operation failed; preserve checkout for inspection"
     );
     Ok(bytes)

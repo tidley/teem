@@ -902,7 +902,8 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
     let manifest: toml::Value =
         toml::from_str(&fs::read_to_string(root.join("herdr-plugin.toml")).unwrap()).unwrap();
     assert_eq!(manifest["id"].as_str(), Some("local.teem"));
-    for kind in ["startup", "actions", "panes"] {
+    assert!(manifest.get("startup").is_none());
+    for kind in ["actions", "panes"] {
         for entry in manifest[kind].as_array().unwrap() {
             assert_eq!(entry["command"][0].as_str(), Some("bin/teem"));
         }
@@ -920,16 +921,16 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
     let instruction = text(&profile["agents"]["teem_foreman"], "system");
     for rule in [
         "Each distinct user task or issue gets its own workflow",
-        "at least one dedicated implementation worker",
-        "Do not bundle separate tasks or issues into a catch-all workflow",
+        "dedicated implementation worker",
+        "do not bundle issues because files overlap",
         "explicit stop/handoff approval",
         "teem_foreman_reconcile",
-        "Local commits of verified authorised work are permitted",
-        "continue only already-authorised work",
+        "Local commits require local-commit authority",
+        "Continue only already-authorised work",
         "trusted Build-equivalent tool access",
-        "Git status, remote refs, repository metadata, open PRs, PR details/checks, history, whitespace checks",
-        "ngit --help",
-        "Approval for one publication is not standing publication authority",
+        "routine development and read-only inspection",
+        "prefer ordinary read-only GitHub CLI commands to raw API calls",
+        "publication approval is limited to its intended refs and destination",
         "These are behavioural approval rules, not shell-enforced barriers",
     ] {
         assert!(

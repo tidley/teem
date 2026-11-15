@@ -95,8 +95,15 @@ fn unconfigured_start_is_a_noop() {
 fn installed_binary_and_mcp_round_trip_need_no_python_runtime() {
     let tmp = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_teem"))
+        .env_clear()
         .arg("install-plugin")
         .current_dir(tmp.path())
+        .env("HOME", tmp.path().join("home"))
+        .env("XDG_CONFIG_HOME", tmp.path().join("config"))
+        .env("XDG_DATA_HOME", tmp.path().join("data"))
+        .env("XDG_STATE_HOME", tmp.path().join("state-home"))
+        .env("XDG_CACHE_HOME", tmp.path().join("cache"))
+        .env("HERDR_PLUGIN_CONFIG_DIR", tmp.path().join("herdr-config"))
         .output()
         .unwrap();
     assert!(
@@ -149,7 +156,43 @@ fn installed_binary_and_mcp_round_trip_need_no_python_runtime() {
         .collect::<Vec<_>>();
     assert_eq!(responses.len(), 3);
     assert_eq!(responses[0]["result"]["protocolVersion"], "2025-11-25");
-    assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 9);
+    let reconcile = responses[1]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "foreman_reconcile")
+        .unwrap();
+    assert_eq!(
+        reconcile["inputSchema"]["properties"]["setup_snapshot"]["type"],
+        "string"
+    );
+    assert_eq!(
+        reconcile["inputSchema"]["properties"]["blocked_snapshot"]["type"],
+        "string"
+    );
+    assert_eq!(reconcile["inputSchema"]["additionalProperties"], false);
+    let mut tool_names = responses[1]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    tool_names.sort_unstable();
+    assert_eq!(
+        tool_names,
+        vec![
+            "foreman_ack",
+            "foreman_color",
+            "foreman_integrate",
+            "foreman_plan",
+            "foreman_reconcile",
+            "foreman_recover_qualification",
+            "foreman_status",
+            "foreman_stop",
+            "foreman_submit",
+            "foreman_workflow"
+        ]
+    );
     let plan: Value = serde_json::from_str(
         responses[2]["result"]["content"][0]["text"]
             .as_str()

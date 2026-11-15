@@ -152,12 +152,36 @@ pub fn prompt_text(t: &Value) -> String {
         text(&t["request"], "prompt")
     )
 }
+const OUTCOME_EVIDENCE: &str = "Status retrieval: use this workflow_id or task_id; default status is a bounded summary. Read actual check results, both exact-candidate verdicts and unresolved findings/limitations. Follow marked truncations/missing rows with section pagination or mode=detail and JSON pointer, then next_offset chunks. Never claim success or acknowledge unseen evidence from a returned file path. If output is inaccessible, retry a narrower section/smaller limit; otherwise report the blocker without ack. Do not broaden directory permissions. Execution success is not review approval; ready is candidate qualification. Later integration receipts take precedence over historical candidate details; integration does not verify publication or runtime. Only acknowledge after consuming the relevant readable outcome.";
+
 pub fn event_payload(e: &Value) -> Result<Value> {
+    let Some(workflow) = e["workflow_id"].as_str() else {
+        return previous_event_payload(e);
+    };
     let mut payload = legacy_event_payload(e)?;
     payload["text"] = json!(format!(
-        "{} Status retrieval: use this workflow_id or task_id; default status is a bounded summary. Read actual check results, both exact-candidate verdicts and unresolved findings/limitations. Follow marked truncations/missing rows with section pagination or mode=detail and JSON pointer, then next_offset chunks. Never claim success or acknowledge unseen evidence from a returned file path. If output is inaccessible, retry a narrower section/smaller limit; otherwise report the blocker without ack. Do not broaden directory permissions. Execution success is not review approval; ready is candidate qualification. Later integration receipts take precedence over historical candidate details; integration does not verify publication or runtime. Only acknowledge after consuming the relevant readable outcome.",
-        text(&payload, "text")
+        "Teem workflow outcome event {} for workflow {workflow}. Read foreman_status and consume the current evidence before foreman_ack. This notification grants no new authority. Existing explicit task approval remains usable: continue an eligible bounded same-task continuation within remaining budget; integration, local commit, publication or deployment needs its own existing explicit authority and applicable gates. Use foreman_integrate for authorised exact-candidate integration. Never expand scope, silently renew budgets, replay uncertain work, answer permission cards or mutate Teem state through shell/API calls. If routine correction remains, act under existing authority rather than asking the user to diagnose it. At task completion or a genuine blocker, briefly report engineering decisions, the trigger and broken behaviour of demonstrated regressions, proposed, implemented and verified fixes, check/review evidence and remaining limitations. Candidate readiness alone is not completion of a larger requested outcome. Progress is displayed independently; do not poll or maintain checklists for this notification. {OUTCOME_EVIDENCE}",
+        text(e, "id")
     ));
+    Ok(payload)
+}
+
+// Exact installed autonomy-era inputs remain valid receipts, not new instructions.
+fn autonomy_event_payload(e: &Value) -> Result<Value> {
+    let mut payload = previous_event_payload(e)?;
+    if e["workflow_id"].is_string() {
+        payload["text"] = json!(text(&payload, "text").replace(
+            "Do not refresh the checklist, dispatch agents, replay work, approve permissions, integrate, merge or publish. Progress is displayed independently; this is the final result notification, not a progress update.",
+            "After reading and acknowledging the evidence, continue only an eligible bounded same-task continuation already covered by user authority and remaining budget; otherwise briefly report engineering decisions, verification, limitations and the specific blocker. Do not invent tasks, silently renew budgets, replay uncertain work, approve permissions, integrate, merge or publish. Progress is displayed independently; do not poll or maintain checklists merely for this notification."
+        ));
+    }
+    Ok(payload)
+}
+
+// Accept previously delivered inputs by exact bytes; never resend them on upgrade.
+fn previous_event_payload(e: &Value) -> Result<Value> {
+    let mut payload = legacy_event_payload(e)?;
+    payload["text"] = json!(format!("{} {OUTCOME_EVIDENCE}", text(&payload, "text")));
     Ok(payload)
 }
 
@@ -188,6 +212,8 @@ fn validate_event(e: &Value, m: &Value, queued: bool) -> Result<()> {
             && m["type"] == "synthetic"
             && (!queued || m["sessionID"] == e["foreman"])
             && (body["text"] == expected["text"]
+                || body["text"] == autonomy_event_payload(e)?["text"]
+                || body["text"] == previous_event_payload(e)?["text"]
                 || body["text"] == legacy_event_payload(e)?["text"])
             && body["metadata"] == expected["metadata"],
         "Native completion input mismatch"

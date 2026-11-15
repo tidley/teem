@@ -6,7 +6,7 @@ Herdr 0.9.1 accepted the original manifest in a temporary, isolated plugin regis
 
 ## What it provides
 
-- One explicitly registered Foreman conversation in Herdr, with optional independent Codr/White Noise phone access.
+- Native Teem tools in every top-level chat where the server plugin is loaded, with optional independent Codr/White Noise phone access.
 - A native Rust supervisor with persistent SQLite task and event records.
 - Two implementation slots and two reviewer slots per managed task. Legacy tasks share two slots per role.
 - Headless OpenCode sessions. Workers do not create Herdr panes or additional Codr chats.
@@ -34,25 +34,40 @@ wire/database expectations are inert JSON/SQL fixtures, not executable reference
 code. Tests do not use live models or services.
 Teem does not require Codr, White Noise, a bridge account, or a Codr local control socket.
 
-## Explicit local setup
+## Installation and explicit activation
 
 These commands change local configuration. They are operator instructions, not steps already performed.
 
 1. Review `herdr-plugin.toml` and the Rust modules under `src/`.
-   Install with `herdr plugin install tidley/teem`, or build a local checkout with
-   `cargo run --locked --release -- install-plugin` before linking it.
-2. Link the local plugin:
+   Install with `herdr plugin install tidley/teem`. The manifest build installs
+   the executable, shared global `agents.teem` profile and native server/TUI
+   package. New selections use `teem` (host input label **Teem**), not
+   `teem_foreman`. No repo-local OpenCode configuration is required. Existing
+   defaults and legacy entries/bound identities stay intact.
+   See [paths, conflicts, upgrade and host limits](ISSUE19_GLOBAL_INSTALL.md).
+2. For a local checkout only, build/install before linking. These commands now
+   also register global OpenCode configuration:
 
    ```sh
-   herdr plugin link /home/tom/code/teem
+   cargo run --locked --release -- install-plugin
+   herdr plugin link /absolute/path/to/teem
    herdr plugin config-dir local.teem
    ```
 
-3. Copy `examples/foreman.toml` to `config.toml` inside the printed plugin configuration directory.
+3. Discovery/selection works without supervisor configuration or activation.
+   For delegation, copy `examples/foreman.toml` to `config.toml` inside the printed
+   plugin configuration directory. Confirm it matches the registered native
+   plugin's `options.config`; preserve intentional custom overrides.
+   `HERDR_PLUGIN_CONFIG_DIR` selects this path at installation; absent it, the
+   CLI fallback is `$XDG_CONFIG_HOME/teem/config.toml` or
+   `$HOME/.config/teem/config.toml`. Local builds can explicitly use
+   `--config /absolute/plugin/config.toml install-plugin`.
 4. Set a private `state_dir`, local service `registry`, explicit `model`, and `allowed_checkouts` in that file.
 5. Leave `enabled = false` until you authorise model execution.
-6. Focus the intended Foreman OpenCode pane. Invoke the `local.teem.bind` plugin action.
-   This records its exact native session ID and terminal ID. A display name alone cannot bind it.
+6. Select Teem in the intended top-level OpenCode chat. Native tools authenticate
+   that chat without manual binding. Use `/teem enable` only for optional exact
+   Herdr/model capture. The `local.teem.bind` action is for legacy fixed-MCP setup;
+   a display name alone cannot bind a chat.
 7. Generate a service unit with the absolute configuration path:
 
    ```sh
@@ -65,28 +80,49 @@ These commands change local configuration. They are operator instructions, not s
    To start after login without opening Herdr, explicitly enable the user service.
    This MVP does not change login, linger, or boot policy.
 
-The startup hook starts only an already configured service. Missing configuration is a no-op.
-An enabled configuration without an installed unit produces a visible service error.
-Herdr startup hooks are not daemon supervisors. systemd owns the supervisor process.
+There is no automatic startup hook: installation/loading must not activate even
+an already configured supervisor. The explicit start action starts only an enabled,
+configured service; missing configuration is a no-op. An enabled configuration
+without an installed unit produces a visible service error. Existing operator-enabled
+systemd/login policy is unchanged. systemd owns the supervisor process.
 
 ## Enable the current native chat
 
+Loading the native server plugin makes Teem available in all top-level chats in
+that location. Load it globally for all projects. Native tool calls authenticate
+the session and agent from host-provided context; they do not require a Herdr pane,
+prior `/teem enable`, or a registered project. Status, retained evidence, and
+session-local checklists work before an execution policy is configured. The first
+call creates only a bookkeeping binding marked `native-session:SESSION_ID`, not a
+Herdr terminal identity. Existing real terminal bindings are preserved.
+
 The optional TUI command `/teem enable` binds the exact current top-level chat,
-Herdr terminal, native agent/project/directory and selected model to one configured
-managed-project alias. Repeating it is idempotent; it starts no work or service and
-does not change permissions. Configure the TUI and native server bridge with
-absolute `executable` and `config` options. The server uses trusted native tool
+Herdr terminal, native agent/project/directory and selected model. A managed-project
+alias is captured when configured; missing registration does not block enablement.
+Repeating it is idempotent; it starts no work or service and
+does not change permissions. Standard installation registers the TUI and native
+server bridge with stable absolute `executable` and `config` options. Missing
+supervisor configuration does not prevent static tool catalog registration.
+Setup discovery reads only the configured projection path, without opening state.
+The server uses trusted native tool
 context rather than rebinding location-global MCP. See
 [issue #1 setup, restrictions and qualification limits](ISSUE1_ENABLEMENT.md).
 
 Native delegation is managed-only: `foreman_submit` is omitted/rejected, and both
-workflow admission and reconciliation of retained sources require the enabled
-project alias. Evidence inspection stays available. Existing fixed MCP remains
+workflow admission and reconciliation require exactly one configured home policy
+matching the chat directory. The authorised target may be another configured
+project; it retains its own source, checks and access policy. Reconciliation also
+verifies candidate ownership and preserves its project and issue. Teem does not
+guess test commands, register execution policies automatically, or treat loading
+as permission for paid work. Evidence inspection stays available even if a policy
+is removed. Existing fixed MCP remains
 independently bound legacy compatibility as documented below.
 
 ## Foreman tools
 
-Configure a local MCP server for the intended Foreman runtime. Merge this example into existing configuration.
+This fixed-session MCP setup is **legacy compatibility**, not required by the
+standard native installation. Configure it only for an intentionally fixed
+Foreman runtime. Merge this example into existing configuration.
 Do not overwrite an existing OpenCode configuration file.
 
 ```json
@@ -117,6 +153,8 @@ The MCP tools appear with their own schemas and descriptions. They do not depend
 - `foreman_ack`: acknowledge one event after consuming its result. This does not approve code.
 - `foreman_plan`: define this conversation's ordered checklist, linking execution items to retained task UUIDs.
 - `foreman_workflow`: supply an explicit authorised GitHub `issue`, configured project alias, retained workflow UUID, scope and acceptance criteria. No checkout paths or base hashes are needed.
+- `foreman_recover_qualification`: explicitly qualify an eligible retained setup-blocked candidate with fresh checks and two reviews, never an implementation/correction worker. Retain a recovery UUID and expected snapshot digest. Supports historical synchronous ENOENT through validated controller/artifact provenance, not missing handles or error prose alone; see [admission, idempotency and historical proof](ISSUE20_RECOVERY.md).
+- `foreman_reconcile`: explicitly continue the same task on current clean source/current policy. For a positive-non-launch setup-blocked retained candidate, use the distinct `setup_snapshot` digest with a retained new workflow UUID and source workflow ID. This carries patch/findings into one implementation successor; it does not qualify the old snapshot or replay native work. Issue/scope are inherited, provenance is revalidated at seed, and all checks/two reviews run afresh. See [setup handoff](ISSUE20_RECOVERY.md#explicit-setup-handoff-onto-advanced-source). Existing ready/exhausted/confirmed-stop and review-output `blocked_snapshot` contracts remain separate.
 - `foreman_integrate`: after approval, apply a ready exact candidate to its original clean source. Supply a full `commit` instead to verify and record an already integrated exact-candidate commit.
 - `foreman_color`: set this bound Foreman's local accent using `project` and a six-digit hex `color`. No shell or restart is needed.
 - `foreman_stop`: after approval, durably pause a workflow and request interruption of its active native agents. An optional exact `task_id` selects one agent; the workflow still pauses, while already-running siblings are not interrupted.
@@ -159,6 +197,9 @@ The shared Foreman instructions require a separate workflow and at least one
 dedicated implementation worker for each distinct user task or issue. Shared
 files call for explicit dependency sequencing, not a catch-all worker for several
 issues. Each workflow keeps its own checks and two independent reviewers.
+An explicit qualification-only recovery is an exception to dispatching another
+implementation worker: it preserves that candidate's existing implementation
+provenance and launches only fresh checks/reviewers, stopping on findings.
 This is a coordinator instruction, not a claim that Rust can infer issue
 boundaries from arbitrary prose.
 
@@ -275,6 +316,21 @@ table/user-input reporting guidance is documented under [user-requested status t
 
 ### Continuing authorised work
 
+Routine in-scope engineering decisions are autonomous by default. The Foreman
+chooses the smallest complete solution and handles ordinary local blockers, then
+briefs the user on decisions, evidence and limitations at completion or a genuine
+blocker. A plan or design checkpoint is not an extra approval gate for clear scope.
+See [engineering autonomy and its boundaries](FOREMAN_ACCESS.md#engineering-decisions-by-default).
+
+An authenticated native chat with a valid home policy can dispatch explicitly
+authorised work to another configured project alias without moving or rebinding
+the chat. Admission and queued progression validate the home identity; the target
+policy controls source, checks and worker/reviewer access. Fixed MCP keeps its
+exact-directory execution contract. Existing sessions and saved prompts are not
+rewritten. New completion notifications allow eligible bounded same-task
+continuations within existing user authority and remaining budget; they do not
+grant new authority. Exact older notification receipts remain valid without replay.
+
 The Foreman can continue routine implementation and bounded corrections within an
 authorised issue without requesting the same approval again. Integration approval
 also covers necessary same-task reconciliation and its qualified successor. It
@@ -288,11 +344,34 @@ Use `foreman_reconcile` with a new retained `workflow_id` and the
 candidate into a fresh managed workflow. For stopped work, explicitly authorise
 the handoff first. The source must remain `blocked`, with `workflow_paused=true`
 and a `stopped` receipt, and retain a valid exact candidate snapshot and checkout.
+
+A narrow additional case is an unpaused next-round preparation blocked by a
+recorded managed Git timeout. The advanced round must have no recorded round
+entry and neither deterministic worker identity may have any task reservation,
+even terminal. Task reservation precedes native dispatch, so this establishes
+that this round never dispatched. The previous real snapshot/checkout must still
+verify. Explicit reconciliation uses a new workflow and checkout, preserves the
+partial failed directory and rechecks this no-launch guard before seeding. It
+does not retry the parent, qualify its failed-review candidate or manufacture a
+stop receipt. Other blocked states remain ineligible. Fresh checks and two new
+reviews are required under the unchanged same-task acceptance criteria.
+
 Queued, active or uncertain native tasks and unconfirmed task stops anywhere in
 the original task's continuation lineage reject the handoff, including siblings.
 A partial stop does not release running siblings. Pending/attempting/waiting or
-uncertain stops, arbitrary blocked/failed workflows and stopped workflows without
-a retained candidate are not eligible. The parent remains paused and unchanged;
+uncertain stops and arbitrary blocked/failed workflows are not eligible. A narrow
+exception handles an initial reconciliation stopped before capturing a snapshot:
+one confirmed-stopped implementation worker must have made no changes, its input
+tree must equal its base tree, and its retained notes must record `seeded=false`.
+The pinned patch and immediate parent's real snapshot must match exactly. That
+earlier source must satisfy the normal candidate contract (including positive
+non-launch/provenance proof for setup failures). The new worker receives that
+earlier patch for scoped conflict resolution; no snapshot is invented for the
+stopped attempt. Both source identities appear in its notes. Admission and seed
+revalidate the stopped workflow, worker, artifacts and quiescent lineage. Edited,
+successfully seeded, multi-worker or unproven snapshot-less inputs are rejected.
+No task is replayed, no revision budget is silently renewed, and no previous
+check/review qualifies the successor. The parent remains paused and unchanged;
 this does not resume its sessions, replay requests or forge a ready state.
 The project identity, task scope and acceptance criteria are inherited;
 the current project policy and clean source base are used. Active, uncertain,
@@ -326,6 +405,19 @@ only a matching commit can be reconciled by reads. Dirty or unrelated source wor
 is never automatically committed. Check the returned receipt before reporting
 integration, and distinguish local commits from installation or publication.
 
+Before applying a candidate for `commit_local`, Teem checks that Git can resolve
+the operator's author and committer identity. It imports only configured identity
+and signing settings from the operator's normal system/global/repository config;
+repository-local settings retain precedence. It does not guess an author, change
+Git configuration, inherit ambient `GIT_*` overrides, or silently disable signing.
+The preflight snapshot is reused for the commit. A read-only comparison after
+apply rejects changed or newly added identity/signing settings, including local
+includes; it never adopts those new values. Other managed Git configuration isolation and the existing disabled-hook policy
+are unchanged. Imported values are passed through Git's config environment, not
+command arguments or diagnostics. Missing identity fails before source/index
+changes; a signing/commit failure retains the committing receipt and still must
+be reconciled by reads or an exact existing commit, never a blind second commit.
+
 Add a machine-local project policy to the plugin configuration, not to worker-editable
 source. Only explicitly configured projects can run managed work:
 
@@ -351,6 +443,20 @@ targets and file/directory types are captured in the policy. Omitted or empty li
 preserve the old policy and permissions. Exact-file native tool semantics still
 need qualification; no parent-directory fallback is granted. See
 [reference configuration and qualification limits](ISSUE12_REFERENCES.md).
+
+Managed checkout creation uses Git's local clone mode so successive workers and
+reviewers do not repack the source history for every isolated checkout. Immutable
+objects can be hard-linked on the same filesystem; indexes, refs, configuration
+and working files remain separate. Inherited alternate object stores are
+dissociated so a clone does not depend on a later source prune. Git refuses
+symlinked local object storage. Failed or timed-out partial checkouts remain
+preserved; they are not reused or deleted by a retry.
+
+Routine-check instructions defer to captured native shell permissions. An allowed
+scoped inspection or focused regression command needs no extra human approval;
+an `ask` decision still belongs to the human. The supervisor still runs the
+recorded checks against the exact candidate. Trusted shell does not authorise
+publication, device operations, expanded scope or answering permission cards.
 
 If omitted, `max_revisions` defaults to three. It permits one initial implementation
 plus three corrective implementation rounds, not three total attempts. Each new
@@ -509,7 +615,11 @@ The supervisor writes it each loop; the TUI reads it once per second. No model c
 synthetic input or fabricated tool history is needed. A stale observation is labelled
 after 15 seconds. This local file integration needs the TUI on the same host as Teem.
 
-To install, merge these entries into `~/.config/opencode/cli.json` in this order,
+Standard installation registers the package's server/TUI exports in global
+`opencode.json`/`opencode.jsonc`. It discovers `stateFile` from supervisor
+configuration; an explicit existing option wins. The following older CLI-only
+setup is optional compatibility, not a second installation step. Avoid duplicate
+package registrations. To use it, merge these entries into `~/.config/opencode/cli.json` in this order,
 preserving other settings/plugins (use your actual absolute paths):
 
 ```json
@@ -525,9 +635,13 @@ preserving other settings/plugins (use your actual absolute paths):
 }
 ```
 
-The native Todo feature is disabled in this TUI configuration to prevent a second,
-stale checklist. The replacement uses real native todos for all unbound conversations,
-including their revert boundary; only subscribed Teem conversations use passive rows.
+The older example disables the native Todo panel. Its explicit `stateFile` retains
+Teem's native Todo fallback for unbound chats, including their revert boundary.
+Fresh global installations leave ordinary Todo to the host and add only subscribed
+Teem progress. When restoring the host panel in an older setup, also set plugin
+option `nativeTodos: false` to avoid duplicates. `nativeTodos: true` explicitly
+requests the fallback; absent an override it is enabled only with an explicit
+`stateFile`. Installation never edits `cli.json` or disables host sidebar features.
 Other sidebar features are unchanged. Valid CLI changes reload without restarting
 OpenCode's backend. The plugin adds no server, credentials or Python dependency.
 
@@ -535,9 +649,13 @@ Progress changes and individual managed-agent completions do not wake Foreman. T
 event receipts remain inspectable and unacknowledged (`passive` is not consumed or
 approved). When a workflow reaches `ready`, `blocked`, or `needs_attention`, the
 supervisor atomically records its final state and one native outcome event. Foreman
-reads that workflow's evidence, gives one concise result summary, and acknowledges
-the outcome event. No progress rendering or new worker run is requested. This final
-summary can queue behind a user turn; individual stages still cost no Foreman turns.
+reads that workflow's evidence and acknowledges only after consumption. It continues
+eligible bounded corrections or follow-on actions only within existing explicit
+task authority and their normal gates; the event grants none. It reports decisions,
+verified results and limitations at task completion or a genuine blocker. A ready
+candidate need not be the end of an already-authorised integration task. Progress
+rendering and unrelated work are not requested. The notification can queue behind
+a user turn; individual stages still cost no Foreman turns.
 An uncertain notification is reconciled by exact native ID reads, never resent.
 
 Summary `foreman_status.progress.latest_result` also keeps one terminal result outside the
@@ -547,6 +665,19 @@ active todos clear. New outcomes are ordered by recorded finish time. Older fini
 workflows without that timestamp use admission time as a historical fallback; they
 are displayed without backfilled notifications or any task replay. No historical
 request, candidate, check receipt or reviewer verdict is rewritten.
+
+A saved result also has a short notice above the typing box, outside the sidebar
+and its collapse control. `/teem-result` (or **Teem: show latest result** in the
+command palette) opens that chat's retained summary locally. It starts no model
+call and does not resend or acknowledge a completion event. Explicit linked-work
+views retain their original owner and label the link in the result dialog.
+Stale observations say that current status is unavailable; “result available”
+does not claim the candidate is integrated, installed or published. The dialog
+shows the recorded outcome content, including any integration receipt summary.
+The notice does not enable sounds, desktop alerts or force focus to another tab.
+It becomes visible when that chat is viewed, even with the sidebar hidden.
+This addresses a reproducible hidden-result path, not proof of why a particular
+historical completion summary was missed.
 
 Legacy direct task completions still notify Foreman, without a new todo-refresh request.
 Unsent old progress inputs are superseded, not replayed. Already admitted or uncertain
@@ -618,19 +749,53 @@ For a legacy manual review, produce a fixed commit through the project's authori
 Assign reviewers complete, clean checkouts at that commit. Two concurrent reviewers need separate checkout roots in this MVP.
 Run full verification against the combined result before integration. Do not merge sparse-task results merely because individual agents finished.
 
-Workers can edit only their declared relative scope through built-in edit tools. Shell commands require human approval.
+Workers can edit only their declared relative scope through built-in edit tools.
+Shell commands require human approval by default. Explicit captured
+`trusted_worker_shell` policy allows worker shell without per-command approval;
+see [its host-user authority and limits](TRUSTED_WORKERS.md). It does not change
+task scope or authorise publication, device operations or state edits.
 New worker sessions allow external-directory access within `/mnt/fastbuild/`, including
 the required storage instructions and nested build-output directories. This exception
-does not allow other external directories, unscoped edits, or unattended shell commands.
+does not itself allow other external directories or unscoped edits. Explicit
+project reference paths are separate read-context grants, not edit authority.
 Use the central storage adapters; this permission does not authorise changing or deleting
 other projects' build outputs. Reviewer permissions and global OpenCode defaults are unchanged.
 Existing native sessions are not updated or replayed when this worker template changes.
 Reviewers can use read, glob, and grep. They cannot edit, run shell commands, delegate, or use MCP tools.
 These restrictions are runtime permissions, not an operating-system filesystem sandbox.
-Human shell approval can permit actions outside those tool restrictions. Never treat shell approval as routine unattended consent.
-The plugin never auto-approves permissions or performs commits, merges, pushes, deployments, or hardware operations.
+Human shell approval or trusted-worker mode can permit actions outside those tool
+restrictions. Native permission cards remain human-only. The supervisor never
+auto-approves permissions, merges, pushes, deploys or accesses hardware. The native
+integration tool can create only an explicitly authorised exact-candidate local
+commit; it cannot publish it.
 
 ## Status and recovery
+
+### Finished reviewers with rejected output
+
+A workflow can be blocked after both reviewers finish because a verdict fails
+the snapshot-bound JSON contract (for example, a message exceeds 500 characters).
+Worker success does not make such a verdict valid. The stop tool cannot stop an
+already finished agent and must not fabricate a stopped receipt.
+
+After explicit user approval for the same-task correction, use
+`foreman_reconcile` with a new `workflow_id`, the original `source_workflow_id`,
+and `blocked_snapshot` equal to the exact retained snapshot SHA-256. The source
+must be unpaused, unintegrated and blocked, with passing completed checks and two
+distinct finished reviewers, at least one invalid verdict. Check receipts and
+output hashes must verify throughout the lineage; active/uncertain tasks,
+unconfirmed stops, changed snapshots, unresolved helper launches or dirty source
+prevent the handoff. The new correction workflow gets the retained patch and
+rejected raw outputs as **unqualified evidence** and runs implementation, checks
+and two independent reviews afresh. The parent, results and failed verdicts stay
+unchanged. Recovery-only metadata does not carry into an implementation successor.
+
+This is not qualification-only recovery of historical setup failures. An old
+`spec.json`, empty helper log and missing handle do not prove non-launch. The
+historical #19/#21 recovery contract still needs correction in the retained
+recovery candidate. Do not bypass that distinction or edit runtime state to
+manufacture eligibility. This API change requires separately authorised adoption
+before the running supervisor/native bridge can use it.
 
 Open the plugin's status popup on demand. It is not a persistent worker pane.
 The popup is a snapshot, not a live dashboard. Close and reopen it to refresh.

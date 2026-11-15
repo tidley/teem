@@ -13,9 +13,12 @@ Herdr ↔ Foreman ↔ Teem supervisor ↔ Workers/reviewers
 Teem and [Codr](https://github.com/tidley/codr)/[White Noise](https://github.com/marmot-protocol/whitenoise-android) are independent, optional integrations.
 Teem does not import, call, configure, start, or restart [Codr](https://github.com/tidley/codr).
 Without Teem, an ordinary agent conversation works as before.
-With Teem, an explicitly bound Foreman can delegate and receive native completion events.
-The optional `/teem enable` command binds the exact current Herdr/OpenCode chat
-without starting work or changing permissions. See
+With Teem's native server plugin loaded, tools are available in every top-level
+chat, without `/teem enable` or project registration. Status and checklists use
+the caller's own session. Delegation still requires a matching project policy
+with approved checks, an authorised issue, and existing execution approval.
+The optional `/teem enable` command captures the selected model in the exact
+current Herdr/OpenCode chat, without starting work or changing permissions. See
 [native enablement setup and qualification limits](docs/ISSUE1_ENABLEMENT.md).
 
 ## Status
@@ -24,9 +27,32 @@ Early local-first MVP, developed independently from [Codr](https://github.com/ti
 Source: [github.com/tidley/teem](https://github.com/tidley/teem).
 No paid worker run is part of repository setup.
 
+## Engineering defaults
+
+Teem makes routine engineering decisions within an authorised task: inspect the
+actual failures, choose the smallest correct fix, and continue eligible bounded
+corrections without asking for the same approval again. Results explain the
+broken behaviour, decisions, verification and remaining limitations, rather than
+asking the user to diagnose regressions. Proposed, implemented and verified fixes
+are reported separately.
+
+The Foreman instructions separate outcome, authority, execution, evidence and
+reporting. Native chats can coordinate authorised work in another configured
+project without moving or rebinding the chat; each target retains its own policy.
+Approved checks and two independent exact-candidate reviews remain mandatory.
+Integration, local commits, publication, deployment and destructive actions still
+need their respective explicit authority. A completion event grants none, but
+does not revoke approval already given for that scope. Uncertain work is preserved,
+not replayed, and budgets are not silently renewed.
+
+Fresh installations use these defaults. Upgrades preserve existing customised
+profiles; adopt updated instructions explicitly as described in
+[Foreman access and reinstall policy](docs/FOREMAN_ACCESS.md).
+See [the changelog](CHANGELOG.md) for source changes and qualification limits.
+
 ## Components
 
-- `herdr-plugin.toml`: Teem actions, startup hook, and transient status popup.
+- `herdr-plugin.toml`: installation build, explicit Teem actions, and transient status popup.
 - `src/plugin.rs`: [Herdr](https://github.com/herdrdev/herdr) commands, fixed-binding [MCP](https://github.com/modelcontextprotocol/modelcontextprotocol) tools, and service unit output.
 - `src/enable.rs`: explicit native chat receipts, per-call authority and model capture.
 - `src/operator.rs`: explicit candidate integration, verified commit receipts and bounded Foreman color updates.
@@ -50,17 +76,22 @@ No paid worker run is part of repository setup.
 herdr plugin install tidley/teem
 ```
 
-The manifest builds and installs `bin/teem` with [Cargo](https://github.com/rust-lang/cargo).
+The manifest builds `bin/teem` and registers one shared global `agents.teem`
+profile plus the native OpenCode server/TUI plugin. Select **Teem** in any repo;
+no copied repo configuration is needed. Existing defaults, Build, global models
+and permissions, other agents/plugins/MCPs, repo overrides and legacy
+`teem_foreman` identities are preserved. Installation is not activation.
+See [global installation, ownership and compatibility](docs/ISSUE19_GLOBAL_INSTALL.md).
 [Rust](https://github.com/rust-lang/rust) 1.85+ and a native C toolchain are needed
 at installation; Rust and Cargo are not needed by the resulting executable.
 [Git](https://github.com/git/git), [Linux](https://github.com/torvalds/linux)/[systemd](https://github.com/systemd/systemd),
 [Herdr](https://github.com/herdrdev/herdr) and [OpenCode](https://github.com/anomalyco/opencode) remain required.
 For a local checkout run `cargo run --locked --release -- install-plugin` before
 `herdr plugin link /absolute/path/to/teem`. See the plugin guide for explicit setup.
-Existing installations must explicitly replace their service and MCP executable
+Existing service/MCP installations must explicitly replace their executable
 paths. Stop and back up the old supervisor before an approved cutover; never run
 two supervisors against the same state directory. Installation alone does not
-change those machine-local settings or replay tasks.
+change those service/MCP settings or replay tasks.
 
 ## Verify
 
@@ -84,8 +115,9 @@ Managed workflows choose their own base and prepare separate complete clones fro
 They run approved checks and review the exact uncommitted patch/tree snapshot without creating source commits.
 The supervisor never automatically integrates, merges, pushes, deploys or replays uncertain tasks.
 After user approval, `foreman_integrate` can apply an exact verified candidate to
-its original clean source, or verify and record its integration commit. It never
-commits or publishes. Shared status and the sidebar show integration receipts.
+its original clean source, or verify and record its integration commit. With
+explicit local-commit authority, `commit_local=true` records the exact candidate
+locally. It never publishes. Shared status and the sidebar show integration receipts.
 The Foreman profile uses trusted Build-equivalent tool access without routine
 shell or directory prompts. Publication, integration and destructive operations
 still need user authorisation through instructions, not tool-level barriers.
@@ -96,7 +128,8 @@ each distinct task or issue; independent tasks may run in parallel. After user
 approval, `foreman_stop` pauses a workflow and stops its selected native agents
 without discarding their changes or automatically launching replacements.
 Code permissions are not an operating-system sandbox. Existing phone admission and desktop draft races remain unqualified.
-The pilot Foreman uses a project-local runtime profile. This does not impose that profile on other conversations.
+The historical pilot's project-local profile remains compatible but is not needed
+for new global installations. Existing bound chats are not migrated to `teem`.
 Completion admission is not Foreman consumption. Uncertain delivery is reconciled by exact native message ID, never automatic resend.
 Older notification records remain marked `legacy-codr` for manual inspection, without replay.
 New workers and reviewers inherit Foreman's selected model at dispatch; the selection

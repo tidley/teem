@@ -308,13 +308,52 @@ impl Runner {
             .stderr(log);
         environment(&mut cmd);
         process_group(&mut cmd);
-        let child = cmd.spawn()?;
+        let child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                // Only synchronous spawn rejection proves no helper was admitted.
+                write_new(
+                    &dir.join("launch-failure.json"),
+                    canonical(&json!({"spec_sha256":digest(&spec),"not_started":true,"os_error":error.raw_os_error(),"executable":cmd.get_program().to_string_lossy(),"cwd":dir})).as_bytes(),
+                    0o600,
+                )?;
+                return Err(error.into());
+            }
+        };
         let pid = child.id();
         self.children.push(child);
         Ok(
             json!({"spec":path,"receipt":dir.join("receipt.json"),"token":spec["token"],"spec_sha256":digest(&spec),"snapshot":snapshot,"pid":pid,"deadline":now()+array(&checks).iter().map(|c|c["timeout"].as_f64().unwrap()).sum::<f64>()+30.0}),
         )
     }
+}
+/// Positive snapshot-bound non-launch evidence; missing handles are insufficient.
+pub fn setup_failure(dir: &Path, checkout: &Path, checks: &Value, snapshot: &str) -> Result<Value> {
+    let spec: Value = serde_json::from_slice(&regular(&dir.join("spec.json"), 1048576)?)?;
+    let failure: Value = serde_json::from_slice(&regular(&dir.join("launch-failure.json"), 4096)?)?;
+    uuid(&text(&spec, "token"))?;
+    ensure!(
+        spec.as_object().is_some_and(|m| m.len() == 5)
+            && checks == &normalise(checks)?
+            && spec["checkout"] == json!(checkout.canonicalize()?)
+            && spec["checks"] == *checks
+            && spec["snapshot"] == snapshot
+            && spec["directory"] == json!(dir)
+            && failure["spec_sha256"] == digest(&spec)
+            && failure["not_started"] == true
+            && failure["os_error"].is_i64()
+            && regular(&dir.join("helper.log"), 1048576)?.is_empty(),
+        "Check setup failure evidence changed or is ambiguous"
+    );
+    for entry in fs::read_dir(dir)? {
+        ensure!(
+            ["spec.json", "helper.log", "launch-failure.json"]
+                .iter()
+                .any(|name| entry.as_ref().is_ok_and(|e| e.file_name() == *name)),
+            "Unexpected check launch evidence; reconcile by reads, never relaunch"
+        );
+    }
+    Ok(failure)
 }
 pub fn inspect(h: &Value) -> Result<Option<Value>> {
     let path = PathBuf::from(text(h, "receipt"));

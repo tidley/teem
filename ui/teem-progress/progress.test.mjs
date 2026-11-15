@@ -1,6 +1,55 @@
 import { test, expect } from 'bun:test'
-import { parseProjection, selectProgress, nativeTodos, sidebarGroups } from './progress.mjs'
-import { enableCurrentChat, installEnableCommand, installNativeTools, nativeBridge } from './enable.mjs'
+import { readFile } from 'node:fs/promises'
+import { legacyTodoFallback, parseProjection, selectProgress, nativeTodos, sidebarGroups } from './progress.mjs'
+import { enableCurrentChat, installEnableCommand, installNativeTools, nativeBridge, projectionFile } from './enable.mjs'
+
+test('explicit progress sources expose preserved ownership without redirecting native work', () => {
+  const linked = { content: 'preserved workflow', status: 'in_progress' }
+  const own = { content: 'current workflow', status: 'pending' }
+  const projection = parseProjection({ version: 1, updated_at: 100, sessions: {
+    ses_owner: { todos: [linked] }, ses_other: { todos: [own] }, ses_empty: { todos: [] },
+  } })
+  const options = { progressSources: { ses_visible: 'ses_owner' } }
+  expect(selectProgress(projection, 'ses_visible', 100)).toBeUndefined()
+  expect(selectProgress(projection, 'ses_visible', 100, options)).toMatchObject({ todos: [linked], sourceSessionID: 'ses_owner', stale: false })
+  expect(selectProgress(projection, 'ses_unrelated', 100, options)).toBeUndefined()
+  expect(selectProgress(projection, 'ses_other', 100, { progressSources: { ses_other: 'ses_owner' } })).toMatchObject({ todos: [own] })
+  expect(selectProgress(projection, 'ses_empty', 100, { progressSources: { ses_empty: 'ses_owner' } })).toMatchObject({ todos: [linked], sourceSessionID: 'ses_owner' })
+  expect(projection.sessions.ses_visible).toBeUndefined()
+})
+
+test('global projection discovery is safe unconfigured and explicit overrides win', async () => {
+  const options = { executable: '/installed/teem', config: '/private/config.toml' }
+  const calls = []
+  const unconfigured = async (...args) => { calls.push(args); return { stateFile: null } }
+  expect(await projectionFile(options, unconfigured)).toBeUndefined()
+  expect(calls).toEqual([[options, 'native-setup']])
+  expect(await projectionFile(options, async () => ({ stateFile: '/custom/progress.json' })))
+    .toBe('/custom/progress.json')
+  expect(await projectionFile({ ...options, stateFile: '/explicit/progress.json' }, async () => { throw new Error('must not invoke') }))
+    .toBe('/explicit/progress.json')
+  await expect(projectionFile({ ...options, stateFile: 'relative' }, unconfigured)).rejects.toThrow('absolute stateFile')
+  await expect(projectionFile(options, async () => ({ stateFile: 'relative' }))).rejects.toThrow('invalid stateFile')
+  await expect(projectionFile(options, async () => { throw new Error('invalid config') })).rejects.toThrow('invalid config')
+})
+
+test('global TUI leaves ordinary Todo to host and retains legacy fallback on request', async () => {
+  expect(legacyTodoFallback(undefined)).toBe(false)
+  expect(legacyTodoFallback({ executable: '/installed/teem', config: '/private/config.toml' })).toBe(false)
+  expect(legacyTodoFallback({ stateFile: '/private/progress.json' })).toBe(true)
+  expect(legacyTodoFallback({ stateFile: '/private/progress.json', nativeTodos: false })).toBe(false)
+  expect(legacyTodoFallback({ nativeTodos: true })).toBe(true)
+  const messages = [{ id: 'msg_a', type: 'assistant', content: [
+    { type: 'tool', name: 'todowrite', state: { status: 'completed', input: { todos: [{ content: 'native', status: 'pending' }] } } },
+  ] }, { id: 'msg_b', type: 'assistant', content: [
+    { type: 'tool', name: 'todowrite', state: { status: 'completed', input: { todos: [] } } },
+  ] }]
+  expect(nativeTodos(messages)).toEqual([])
+  expect(nativeTodos(messages, 'msg_b')).toEqual([{ content: 'native', status: 'pending' }])
+  const tui = await readFile(new URL('./tui.tsx', import.meta.url), 'utf8')
+  expect(tui).toContain('passive()?.todos ?? (legacyTodoFallback(context.options) ? nativeTodos(')
+  expect(tui).toContain('<Show when={passive() || list().length > 0}>')
+})
 
 function enableContext() {
   let command
@@ -109,6 +158,14 @@ test('navigation while session sync awaits cannot substitute another chat model 
     expect(messages.get('ses_enabled')).toContain(rejectSync ? 'session sync failed' : 'Teem enabled')
     if (!rejectSync) expect(sent.model).toEqual({ providerID: 'provider', id: 'selected', variant: 'high' })
   }
+})
+
+test('optional enablement reports an unregistered chat without an empty project label', async () => {
+  const f = enableContext()
+  let feedback
+  installEnableCommand(f.context, (_, message) => { feedback = message }, async (_, __, input) => ({ ...enabled(input), project: '' }))
+  await f.command().run('enable')
+  expect(feedback).toBe('Teem enabled · current chat · no work started')
 })
 
 test('native tool registration uses trusted invocation context not tool input, and disposes', async () => {

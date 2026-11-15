@@ -1,4 +1,4 @@
-//! Explicit per-chat native authority; the fixed MCP binding remains independent.
+//! Native chat authority; optional model capture and fixed MCP remain independent.
 use crate::{common::*, plugin, runtime::Runtime, store::Store};
 use anyhow::{Context, Result, ensure};
 use rusqlite::params;
@@ -33,6 +33,32 @@ fn native(r: &dyn Runtime, id: &str) -> Result<Value> {
     Ok(s.clone())
 }
 
+fn projects_for(s: &Store, n: &Value) -> Result<Vec<String>> {
+    let directory = Path::new(&text(&n["location"], "directory")).canonicalize()?;
+    Ok(s.projects
+        .as_object()
+        .context("Invalid project policies")?
+        .iter()
+        .filter(|(_, p)| {
+            Path::new(&text(p, "path")).canonicalize().ok().as_ref() == Some(&directory)
+        })
+        .map(|(name, _)| name.clone())
+        .collect())
+}
+
+fn execution_project(s: &Store, receipt: &Value) -> Result<String> {
+    let matches = projects_for(s, &receipt["native"])?;
+    ensure!(
+        matches.len() == 1,
+        "Teem is available in this chat; delegation requires exactly one project policy with approved checks for its directory"
+    );
+    ensure!(
+        text(receipt, "project").is_empty() || receipt["project"] == matches[0],
+        "Enabled project policy removed or directory changed"
+    );
+    Ok(matches[0].clone())
+}
+
 pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Result<Value> {
     let fields = ["sessionID", "agent", "projectID", "directory", "model"];
     let args = request
@@ -61,22 +87,12 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
             && request["directory"] == n["location"]["directory"],
         "Current chat identity changed; run /teem enable again in the intended chat"
     );
-    let directory = Path::new(&text(&n["location"], "directory")).canonicalize()?;
-    let projects = s
-        .projects
-        .as_object()
-        .context("Configure a managed project policy")?;
-    let matches = projects
-        .iter()
-        .filter(|(_, p)| {
-            Path::new(&text(p, "path")).canonicalize().ok().as_ref() == Some(&directory)
-        })
-        .collect::<Vec<_>>();
+    let matches = projects_for(s, &n)?;
     ensure!(
-        matches.len() == 1,
-        "Configure exactly one managed project alias for this chat directory"
+        matches.len() <= 1,
+        "Configure at most one managed project alias for this chat directory"
     );
-    let project = matches[0].0;
+    let project = matches.first().map(String::as_str).unwrap_or("");
     let selected = model(&request["model"])?;
     let observed = n
         .get("model")
@@ -89,7 +105,8 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
     s.transaction(|| {
         if let Some(binding) = s.query("SELECT * FROM foremen WHERE id=?", [&id])?.first() {
             ensure!(
-                binding["terminal_id"] == receipt["terminal_id"],
+                binding["terminal_id"] == receipt["terminal_id"]
+                    || binding["terminal_id"] == format!("native-session:{id}"),
                 "Existing terminal binding changed; inspect it before enabling"
             );
         }
@@ -99,7 +116,7 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
         {
             for k in ["terminal_id", "directory", "project_id", "project", "agent"] {
                 ensure!(
-                    old[k] == receipt[k],
+                    old[k] == receipt[k] || (k == "project" && old[k] == ""),
                     "Existing enabled chat {k} changed; inspect it before enabling"
                 );
             }
@@ -108,8 +125,11 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
             "INSERT OR IGNORE INTO foremen(id,terminal_id) VALUES (?,?)",
             params![id, text(&receipt, "terminal_id")],
         )?;
+        // Replace only our native-session marker with the verified Herdr terminal.
+        s.exec("UPDATE foremen SET terminal_id=? WHERE id=? AND terminal_id=?",
+            params![text(&receipt, "terminal_id"), id, format!("native-session:{id}")])?;
         s.exec(
-            "INSERT INTO chat_enablements(foreman,terminal_id,directory,project_id,project,agent,model,native_model) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(foreman) DO UPDATE SET model=excluded.model,native_model=excluded.native_model",
+            "INSERT INTO chat_enablements(foreman,terminal_id,directory,project_id,project,agent,model,native_model) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(foreman) DO UPDATE SET project=excluded.project,model=excluded.model,native_model=excluded.native_model",
             params![
                 id,
                 text(&receipt, "terminal_id"),
@@ -128,13 +148,80 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
     )
 }
 
+/// Explicit operator migration, never an implicit relaxation of native authority.
+pub fn migrate_agent(s: &Store, r: &dyn Runtime, request: &Value) -> Result<Value> {
+    let fields = ["sessionID", "fromAgent", "toAgent"];
+    let args = request
+        .as_object()
+        .context("Migration requires exact chat identity")?;
+    ensure!(
+        args.len() == fields.len()
+            && fields.iter().all(|key| args.contains_key(*key))
+            && request["fromAgent"] == "teem_foreman"
+            && request["toAgent"] == "teem",
+        "Only an explicit teem_foreman to teem receipt migration is supported"
+    );
+    let id = text(request, "sessionID");
+    let observed = native(r, &id)?;
+    ensure!(
+        observed["agent"] == "teem",
+        "Select teem in the intended chat before migration"
+    );
+    s.transaction(|| {
+        let old = s
+            .query("SELECT * FROM chat_enablements WHERE foreman=?", [&id])?
+            .into_iter()
+            .next()
+            .context("This chat has no enablement receipt to migrate")?;
+        ensure!(
+            (old["agent"] == "teem_foreman" || old["agent"] == "teem")
+                && old["project_id"] == observed["projectID"]
+                && old["directory"] == observed["location"]["directory"]
+                && old["terminal_id"] == s.binding(&id)?["terminal_id"],
+            "Enabled chat project, directory, terminal or previous agent changed; migration refused"
+        );
+        let current = native(r, &id)?;
+        ensure!(
+            current["agent"] == observed["agent"]
+                && current["projectID"] == observed["projectID"]
+                && current["location"] == observed["location"]
+                && current["model"] == observed["model"],
+            "Native chat identity or model changed during migration"
+        );
+        s.exec(
+            "UPDATE chat_enablements SET agent='teem' WHERE foreman=? AND agent='teem_foreman'",
+            [&id],
+        )?;
+        Ok(())
+    })?;
+    Ok(json!({"sessionID":id,"agent":"teem","migrated":true,"started":false}))
+}
+
 pub fn authority(s: &Store, r: &dyn Runtime, id: &str, caller_agent: &str) -> Result<Value> {
-    let mut receipt = s
+    let n = native(r, id)?;
+    ensure!(
+        n["agent"] == caller_agent,
+        "Native caller agent does not match this chat"
+    );
+    let stored = s
         .query("SELECT * FROM chat_enablements WHERE foreman=?", [id])?
         .into_iter()
-        .next()
-        .context("Run /teem enable in this chat first")?;
-    let n = native(r, id)?;
+        .next();
+    let Some(mut receipt) = stored else {
+        // Native tools already carry authenticated session identity. No Herdr
+        // pane or managed execution policy is needed for session-local access.
+        s.exec(
+            "INSERT OR IGNORE INTO foremen(id,terminal_id) VALUES (?,?)",
+            params![id, format!("native-session:{id}")],
+        )?;
+        // Native admission can preserve a real Herdr terminal binding. Keep its
+        // provenance separately; the terminal value is not an access-mode tag.
+        s.exec(
+            "INSERT OR IGNORE INTO native_chats(foreman) VALUES (?)",
+            [id],
+        )?;
+        return Ok(json!({"foreman":id,"project":"","native":n}));
+    };
     ensure!(
         receipt["agent"] == caller_agent
             && n["agent"] == receipt["agent"]
@@ -142,17 +229,6 @@ pub fn authority(s: &Store, r: &dyn Runtime, id: &str, caller_agent: &str) -> Re
             && n["location"]["directory"] == receipt["directory"]
             && s.binding(id)?["terminal_id"] == receipt["terminal_id"],
         "Enabled chat identity or caller agent changed; inspect and enable the intended chat"
-    );
-    let policy = &s.projects[text(&receipt, "project")];
-    ensure!(
-        policy["path"].as_str().is_some_and(|p| {
-            Path::new(p)
-                .canonicalize()
-                .ok()
-                .zip(Path::new(&text(&receipt, "directory")).canonicalize().ok())
-                .is_some_and(|(a, b)| a == b)
-        }),
-        "Enabled project policy removed or directory changed"
     );
     for k in ["model", "native_model"] {
         receipt[k] = serde_json::from_str(receipt[k].as_str().context("Invalid enable receipt")?)?;
@@ -189,21 +265,40 @@ pub fn call(s: &Store, r: &dyn Runtime, envelope: &Value) -> Result<Value> {
         "Native chats use managed foreman_workflow, not legacy foreman_submit"
     );
     let input = &envelope["arguments"];
-    if name == "foreman_workflow" {
-        ensure!(
-            input["project"] == receipt["project"],
-            "Workflow must use this enabled project alias"
-        );
+    // A retained recovery/setup-handoff retry is inspection, not renewed launch admission.
+    // Authentication and immutable-argument/owner validation still apply.
+    if name == "foreman_recover_qualification"
+        && !s
+            .query(
+                "SELECT id FROM workflows WHERE id=?",
+                [text(input, "recovery_id")],
+            )?
+            .is_empty()
+    {
+        return plugin::call(s, &id, &name, input);
     }
-    if name == "foreman_reconcile" {
+    if name == "foreman_reconcile"
+        && input.get("setup_snapshot").is_some()
+        && !s
+            .query(
+                "SELECT id FROM workflows WHERE id=?",
+                [text(input, "workflow_id")],
+            )?
+            .is_empty()
+    {
+        return plugin::call(s, &id, &name, input);
+    }
+    if name == "foreman_workflow" {
+        // Authenticate the chat's home policy without restricting the requested
+        // target. Managed admission validates that target's configured policy.
+        execution_project(s, &receipt)?;
+    }
+    if name == "foreman_reconcile" || name == "foreman_recover_qualification" {
+        execution_project(s, &receipt)?;
         let source = s.workflow(&text(input, "source_workflow_id"))?;
         ensure!(
             source["foreman"] == id,
             "Candidate belongs to another Foreman"
-        );
-        ensure!(
-            source["project"] == receipt["project"],
-            "Reconcile source must belong to this enabled project alias"
         );
     }
     // Inspection remains available even for retained evidence from other projects.
@@ -214,13 +309,52 @@ pub fn dispatch_model(s: &Store, r: &dyn Runtime, task: &Value) -> Result<Value>
     let id = text(task, "foreman");
     let rows = s.query("SELECT agent FROM chat_enablements WHERE foreman=?", [&id])?;
     let Some(row) = rows.first() else {
+        if !s
+            .query("SELECT foreman FROM native_chats WHERE foreman=?", [&id])?
+            .is_empty()
+            || s.query("SELECT terminal_id FROM foremen WHERE id=?", [&id])?
+                .first()
+                .is_some_and(|binding| binding["terminal_id"] == format!("native-session:{id}"))
+        {
+            let n = native(r, &id)?;
+            execution_project(s, &json!({"project":"","native":n}))?;
+            return model(&n["model"]);
+        }
         return r.dispatch_model(task);
     };
     let receipt = authority(s, r, &id, &text(row, "agent"))?;
+    execution_project(s, &receipt)?;
     let current = &receipt["native"]["model"];
     model(if *current != receipt["native_model"] {
         current
     } else {
         &receipt["model"]
     })
+}
+
+/// Native chats authenticate against their home policy, not a task's target.
+/// Fixed MCP callers retain their original exact-directory contract.
+pub fn validate_execution(s: &Store, r: &dyn Runtime, foreman: &str, target: &str) -> Result<()> {
+    let enabled = !s
+        .query(
+            "SELECT foreman FROM chat_enablements WHERE foreman=?",
+            [foreman],
+        )?
+        .is_empty();
+    let automatic = s.binding(foreman)?["terminal_id"] == format!("native-session:{foreman}");
+    let native = !s
+        .query(
+            "SELECT foreman FROM native_chats WHERE foreman=?",
+            [foreman],
+        )?
+        .is_empty();
+    if enabled || automatic || native {
+        dispatch_model(s, r, &json!({"foreman":foreman}))?;
+    } else {
+        ensure!(
+            r.directory(foreman)? == target,
+            "Foreman location differs from approved project"
+        );
+    }
+    Ok(())
 }

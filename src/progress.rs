@@ -174,6 +174,9 @@ pub fn workflow_rows(s: &Store, f: &str) -> Result<Vec<Value>> {
         let label = format!("{} · {}", text(&w, "project"), title(&w));
         let desc = match state.as_str() {
             "queued" => "queued",
+            "qualification_queued" => {
+                "qualification-only recovery queued; no implementation worker"
+            }
             "preparing" => "preparing isolated checkout",
             "working" => "implementation",
             "snapshotting" => "freezing exact candidate",
@@ -186,7 +189,7 @@ pub fn workflow_rows(s: &Store, f: &str) -> Result<Vec<Value>> {
             &w,
             "",
             &label,
-            if state == "queued" {
+            if state == "queued" || state == "qualification_queued" {
                 "pending"
             } else {
                 "in_progress"
@@ -206,7 +209,9 @@ pub fn workflow_rows(s: &Store, f: &str) -> Result<Vec<Value>> {
         };
         let suffix = format!("_round_{number}");
         let ids = round.get("worker_ids").map(array).unwrap_or_else(|| {
-            if round.get("worker_id").is_some() {
+            if w["request"].get("qualification_recovery").is_some() {
+                vec![]
+            } else if round.get("worker_id").is_some() {
                 vec![round["worker_id"].clone()]
             } else {
                 vec![

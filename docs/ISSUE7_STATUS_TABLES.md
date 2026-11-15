@@ -63,10 +63,11 @@ need does not answer a card, grant permissions, or authorise integration.
   if hashes change. Label partial coverage; do not describe one page as all issues.
   Read relevant failures, findings and limitations before summarising/acknowledging.
   An unreadable result remains a reported blocker, not an acknowledged success.
-- These tables are request-driven. Completion notifications still require one
-  concise outcome summary and acknowledgement after evidence consumption. They
-  must not trigger polling, repeated tables, checklist maintenance or work dispatch.
-  Passive progress and existing native outcome/ack behavior are unchanged.
+- These tables are request-driven. Completion notifications require evidence
+  consumption before acknowledgement, not polling, repeated tables, checklist
+  maintenance or unrelated dispatch. Existing task authority can cover eligible
+  corrections and follow-on integration; the notification grants no new authority.
+  Give a concise verified result at task completion or a specific genuine blocker.
 
 ## Local regression coverage and limits
 

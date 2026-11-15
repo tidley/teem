@@ -26,7 +26,12 @@ table-driven; test counts are not a one-to-one translation of the old suite.
 The numeric fixture contains 1,999 finite legacy values and their expected
 encoding. Its expectations are data, not generated at test time by an old
 implementation. The subprocess fixture is a separate Cargo test target; the
-plugin's `install-plugin` command copies only the real `teem` executable.
+plugin's `install-plugin` command installs the real `teem` executable and shipped
+OpenCode adapter assets with shared global agent/plugin registration, never the
+subprocess fixture. All installer test children clear inherited environments and
+isolate HOME/XDG/Herdr paths before invocation. `issue19_install.rs` covers fresh,
+repeat/upgrade, user/legacy/repo preservation, JSONC and failure/refusal/bootstrap
+contracts without live models/services. Host loader/selector acceptance is separate.
 
 The OpenCode adapter still uses its required TypeScript host API. Run its four
 helper tests with `bun test ui/teem-progress/progress.test.mjs`.

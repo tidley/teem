@@ -93,8 +93,13 @@ fn assert_guidance(t: &Value, expected: &Value) {
     assert!(prompt.contains("Do not run or request these checks"));
     assert!(prompt.contains("including after a revision"));
     assert!(prompt.contains("Report any additional verification needed"));
-    assert!(prompt.contains("Other shell commands still require native human permission"));
+    assert!(prompt.contains("Other shell commands follow captured native permissions"));
+    assert!(prompt.contains("ask still requires the human"));
     assert!(prompt.contains("Never answer permission cards or change policy"));
+    assert!(
+        prompt.contains("Make routine in-scope engineering decisions without asking for approval")
+    );
+    assert!(prompt.contains("Report decisions, verification and unresolved limitations"));
     let file = PathBuf::from(text(t, "checkout")).join(".git/teem-routine-checks.json");
     if file.exists() {
         assert!(prompt.contains("read pagination"));
@@ -126,6 +131,31 @@ fn assert_guidance(t: &Value, expected: &Value) {
             .any(|r| r["action"] == "shell" && r["effect"] == "allow")
     );
 }
+#[test]
+fn trusted_worker_guidance_does_not_invent_extra_human_permission_requirements() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, r, _) = configured_fixture(tmp.path(), policy(), "Implement scoped work", false);
+    s.trusted_worker_shell = true;
+    workflows::tick(&s, &r, &mut runner()).unwrap();
+    let task = s.claim().unwrap().unwrap();
+    let task = s
+        .record_model(
+            &text(&task, "id"),
+            &json!({"providerID":"fixture","id":"model"}),
+        )
+        .unwrap();
+    assert!(
+        array(&runtime::permissions(&task))
+            .iter()
+            .any(|r| r["action"] == "shell" && r["effect"] == "allow")
+    );
+    let prompt = text(&task["request"], "prompt");
+    assert!(!prompt.contains("Other shell commands still require native human permission"));
+    assert!(prompt.contains("allowed commands need no additional human approval"));
+    assert!(prompt.contains("Never answer permission cards or change policy"));
+    assert!(prompt.contains("Do not commit, merge, publish, deploy, delegate"));
+}
+
 #[test]
 fn initial_workers_receive_only_exact_recorded_checks_without_permissions_or_execution() {
     let tmp = tempfile::tempdir().unwrap();

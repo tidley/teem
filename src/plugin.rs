@@ -145,6 +145,7 @@ pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
         "foreman_color" => crate::operator::color(s, f, args),
         "foreman_stop" => crate::control::request(s, f, args),
         "foreman_reconcile" => crate::reconcile::submit(s, f, args),
+        "foreman_recover_qualification" => crate::recovery::submit(s, f, args),
         "foreman_ack" => {
             s.ack(f, args["event_id"].as_str().context("Invalid event ID")?)?;
             Ok(json!({"acknowledged":true}))
@@ -421,20 +422,8 @@ pub fn main(args: Vec<String>) -> Result<()> {
             return Ok(());
         }
         "install-plugin" => {
-            let destination = std::env::current_dir()?.join("bin/teem");
-            private_dir(destination.parent().unwrap())?;
-            let data = regular(&std::env::current_exe()?, 512 * 1024 * 1024)?;
-            let mut f = tempfile::NamedTempFile::new_in(destination.parent().unwrap())?;
-            f.write_all(&data)?;
-            use std::os::unix::fs::PermissionsExt;
-            f.as_file()
-                .set_permissions(fs::Permissions::from_mode(0o755))?;
-            f.as_file().sync_all()?;
-            f.persist(&destination).map_err(|e| e.error)?;
-            println!(
-                "Installed native plugin executable: {}",
-                destination.display()
-            );
+            ensure!(rest.is_empty(), "install-plugin accepts no arguments");
+            crate::install::install(&config)?;
             return Ok(());
         }
         "check-helper" => {
@@ -486,18 +475,36 @@ pub fn main(args: Vec<String>) -> Result<()> {
             "serve",
             "service-start",
             "enable-chat",
+            "migrate-chat-agent",
             "native-tools",
+            "native-setup",
             "native-call",
         ]
         .contains(&command.as_str()),
         "Unknown command"
     );
-    let c = load(&config)?;
     if command == "native-tools" {
         ensure!(rest.is_empty(), "native-tools accepts no arguments");
         println!("{}", crate::enable::tools());
         return Ok(());
     }
+    if command == "native-setup" {
+        ensure!(rest.is_empty(), "native-setup accepts no arguments");
+        let state = match fs::read_to_string(&config) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+            Ok(_) => Some(expand(&text(&load(&config)?, "state_dir")).join("progress.json")),
+        };
+        println!("{}", json!({"stateFile":state}));
+        return Ok(());
+    }
+    let c = load(&config).map_err(|error| {
+        if ["enable-chat", "native-call"].contains(&command.as_str()) {
+            anyhow::anyhow!("Configure Teem at {} (herdr plugin config-dir local.teem): {error:#}. Installation alone does not enable supervision", config.display())
+        } else {
+            error
+        }
+    })?;
     if command == "serve" {
         return serve(&config, &c);
     }
@@ -517,7 +524,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
     }
     let s = open(&c)?;
     match command.as_str() {
-        "enable-chat" | "native-call" => {
+        "enable-chat" | "native-call" | "migrate-chat-agent" => {
             ensure!(rest.is_empty(), "Native bridge accepts JSON on stdin only");
             let mut bytes = Vec::new();
             std::io::Read::take(std::io::stdin(), 65537).read_to_end(&mut bytes)?;
@@ -525,7 +532,9 @@ pub fn main(args: Vec<String>) -> Result<()> {
             let request: Value = serde_json::from_slice(&bytes)?;
             let runtime = OpenCode::new(&expand(&text(&c, "registry")), &text(&c, "model"))
                 .context("Configure an available native runtime registry and fallback model")?;
-            let result = if command == "enable-chat" {
+            let result = if command == "migrate-chat-agent" {
+                crate::enable::migrate_agent(&s, &runtime, &request)?
+            } else if command == "enable-chat" {
                 crate::enable::enable(&s, &runtime, &request, &focused_agent()?)?
             } else {
                 crate::enable::call(&s, &runtime, &request)?

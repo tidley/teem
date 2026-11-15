@@ -8,9 +8,6 @@ platforms = ["linux"]
 [[build]]
 command = ["cargo", "run", "--locked", "--release", "--", "install-plugin"]
 
-[[startup]]
-command = ["bin/teem", "service-start"]
-
 [[actions]]
 id = "bind"
 title = "Teem: bind focused Foreman conversation"

@@ -127,6 +127,9 @@ fn workflow_summary(w: &Value, tasks: &[Value]) -> Value {
     );
     out["title"] = clip(&json!({"title":progress::title(w)}), "title", 120);
     out["reconcile_from"] = w["request"]["reconcile_from"].clone();
+    if let Some(recovery) = w["request"].get("qualification_recovery") {
+        out["qualification_recovery"] = fields(recovery, &["source_workflow_id", "arguments"]);
+    }
     if !w["stop"].is_null() {
         let mut stop = fields(&w["stop"], &["state", "requested_at", "workflow_paused"]);
         let targets = array(&w["stop"]["targets"]);

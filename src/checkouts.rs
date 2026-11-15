@@ -206,7 +206,10 @@ pub fn prepare(
         &source,
         &[
             "clone",
-            "--no-local",
+            // Local Git objects are immutable: links avoid a fresh pack transfer
+            // for every round. Dissociate any alternates inherited from source.
+            "--local",
+            "--dissociate",
             "--no-checkout",
             "--",
             source.to_str().unwrap(),

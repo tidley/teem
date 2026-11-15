@@ -4,7 +4,7 @@ import { isAbsolute } from 'node:path'
 // Fixed argv and stdin JSON, never a shell or location-global MCP rebinding.
 export function nativeBridge(options, command, input, signal) {
   return new Promise((resolve, reject) => {
-    if (!['enable-chat', 'native-tools', 'native-call'].includes(command)
+    if (!['enable-chat', 'native-tools', 'native-call', 'native-setup'].includes(command)
       || !isAbsolute(options?.executable ?? '') || !isAbsolute(options?.config ?? '')) {
       reject(new Error('Teem needs absolute executable and config options'))
       return
@@ -51,6 +51,22 @@ export function nativeBridge(options, command, input, signal) {
   })
 }
 
+// Discovery reads configuration only; it never opens state or activates work.
+export async function projectionFile(options, invoke = nativeBridge) {
+  if (options?.stateFile !== undefined) {
+    if (typeof options.stateFile !== 'string' || !isAbsolute(options.stateFile)) {
+      throw new Error('Teem needs an absolute stateFile')
+    }
+    return options.stateFile
+  }
+  const setup = await invoke(options, 'native-setup')
+  if (setup?.stateFile === null) return undefined
+  if (typeof setup?.stateFile !== 'string' || !isAbsolute(setup.stateFile)) {
+    throw new Error('Teem setup returned an invalid stateFile')
+  }
+  return setup.stateFile
+}
+
 export async function enableCurrentChat(context, raw, invoke = nativeBridge) {
   if (typeof raw !== 'string' || raw.trim() !== 'enable') throw new Error('Use /teem enable')
   const sessionID = context.ui.router.current()?.sessionID
@@ -85,7 +101,7 @@ export function installEnableCommand(context, feedback, invoke = nativeBridge) {
         const sessionID = context.ui.router.current()?.sessionID
         try {
           const result = await enableCurrentChat(context, input, invoke)
-          feedback(sessionID, `Teem enabled · ${result.project} · no work started`)
+          feedback(sessionID, `Teem enabled · ${result.project || 'current chat'} · no work started`)
         } catch (error) {
           feedback(sessionID, `Teem enable failed: ${error instanceof Error ? error.message : String(error)}`)
         }

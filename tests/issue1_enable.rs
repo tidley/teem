@@ -5,13 +5,90 @@ use serde_json::{Value, json};
 use std::{cell::RefCell, fs, path::Path};
 use teem::{
     checkouts,
-    common::{canonical, git, git_text, text},
+    common::{canonical, git, git_text, now, text},
     enable, plugin,
     runtime::{self, Runtime},
     store::Store,
 };
 
 const CHAT: &str = "ses_issue1";
+
+#[test]
+fn explicit_legacy_agent_migration_repairs_dispatch_without_rebinding_or_replay() {
+    let f = Fixture::new();
+    f.native.session.borrow_mut()["agent"] = json!("teem_foreman");
+    let mut request = f.request();
+    request["agent"] = json!("teem_foreman");
+    enable::enable(&f.store, &f.native, &request, &f.herdr()).unwrap();
+    let before = f.store.query("SELECT * FROM chat_enablements", []).unwrap()[0].clone();
+    f.native.session.borrow_mut()["agent"] = json!("teem");
+    let migration = json!({"sessionID":CHAT,"fromAgent":"teem_foreman","toAgent":"teem"});
+    assert!(enable::dispatch_model(&f.store, &f.native, &json!({"foreman":CHAT})).is_err());
+    let result = enable::migrate_agent(&f.store, &f.native, &migration).unwrap();
+    assert_eq!(result["started"], false);
+    let mut expected = before;
+    expected["agent"] = json!("teem");
+    assert_eq!(
+        f.store.query("SELECT * FROM chat_enablements", []).unwrap()[0],
+        expected
+    );
+    assert_eq!(
+        enable::dispatch_model(&f.store, &f.native, &json!({"foreman":CHAT})).unwrap(),
+        request["model"]
+    );
+    assert_eq!(
+        enable::migrate_agent(&f.store, &f.native, &migration).unwrap(),
+        result
+    );
+    for table in ["tasks", "workflows", "events", "approvals"] {
+        assert!(
+            f.store
+                .query(&format!("SELECT * FROM {table}"), [])
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn explicit_agent_migration_rejects_other_identity_changes() {
+    for field in ["agent", "projectID", "directory", "terminal_id", "parentID"] {
+        let f = Fixture::new();
+        f.native.session.borrow_mut()["agent"] = json!("teem_foreman");
+        let mut request = f.request();
+        request["agent"] = json!("teem_foreman");
+        enable::enable(&f.store, &f.native, &request, &f.herdr()).unwrap();
+        let before = f.store.query("SELECT * FROM chat_enablements", []).unwrap();
+        f.native.session.borrow_mut()["agent"] = json!("teem");
+        match field {
+            "directory" => {
+                f.native.session.borrow_mut()["location"]["directory"] = json!("/different")
+            }
+            "terminal_id" => {
+                f.store
+                    .exec(
+                        "UPDATE foremen SET terminal_id='different' WHERE id=?",
+                        [CHAT],
+                    )
+                    .unwrap();
+            }
+            other => f.native.session.borrow_mut()[other] = json!("different"),
+        }
+        assert!(
+            enable::migrate_agent(
+                &f.store,
+                &f.native,
+                &json!({"sessionID":CHAT,"fromAgent":"teem_foreman","toAgent":"teem"})
+            )
+            .is_err(),
+            "accepted {field}"
+        );
+        assert_eq!(
+            f.store.query("SELECT * FROM chat_enablements", []).unwrap(),
+            before
+        );
+    }
+}
 
 struct Native {
     session: RefCell<Value>,
@@ -123,6 +200,237 @@ fn exact_enable_is_idempotent_captures_models_and_starts_nothing() {
 }
 
 #[test]
+fn loaded_tools_work_without_enablement_or_project_registration() {
+    let mut f = Fixture::new();
+    f.store.projects = json!({});
+    assert!(f.call("foreman_status", &json!({})).is_ok());
+    assert!(f.call("foreman_plan", &json!({"items":[{"id":"inspect","content":"Inspect current project","status":"pending"}]})).is_ok());
+    assert!(
+        f.call("foreman_status", &json!({"section":"progress"}))
+            .is_ok()
+    );
+    assert!(f.store.tasks(None).unwrap().is_empty());
+    assert!(f.store.workflows(CHAT).unwrap().is_empty());
+    assert!(
+        f.store
+            .query("SELECT * FROM chat_enablements", [])
+            .unwrap()
+            .is_empty()
+    );
+    let error = f.call("foreman_workflow", &f.workflow("a")).unwrap_err();
+    assert!(error.to_string().contains("approved checks"));
+}
+
+#[test]
+fn optional_enablement_does_not_require_project_registration() {
+    let mut f = Fixture::new();
+    f.store.projects = json!({});
+    let result = f.enable();
+    assert_eq!(result["started"], false);
+    assert!(f.call("foreman_status", &json!({})).is_ok());
+    assert!(f.call("foreman_workflow", &f.workflow("a")).is_err());
+    assert!(f.store.tasks(None).unwrap().is_empty());
+}
+
+#[test]
+fn automatic_access_keeps_sessions_isolated_and_rejects_children_and_wrong_agents() {
+    let f = Fixture::new();
+    f.store.bind("ses_other", "terminal_other").unwrap();
+    plugin::call(
+        &f.store,
+        "ses_other",
+        "foreman_plan",
+        &json!({"items":[{"id":"private","content":"Other chat plan","status":"pending"}]}),
+    )
+    .unwrap();
+    let original = f.store.binding("ses_other").unwrap();
+    assert!(f.call("foreman_status", &json!({})).is_ok());
+    let status = f
+        .call("foreman_status", &json!({"section":"progress"}))
+        .unwrap();
+    assert!(!canonical(&status).contains("Other chat plan"));
+    assert_eq!(f.store.binding("ses_other").unwrap(), original);
+    f.native.session.borrow_mut()["agent"] = json!("plan");
+    assert!(f.call("foreman_status", &json!({})).is_err());
+    assert!(
+        enable::call(
+            &f.store,
+            &f.native,
+            &json!({"sessionID":CHAT,"agent":"plan","name":"foreman_status","arguments":{}})
+        )
+        .is_ok()
+    );
+    f.native.session.borrow_mut()["parentID"] = json!("ses_parent");
+    assert!(
+        enable::call(
+            &f.store,
+            &f.native,
+            &json!({"sessionID":CHAT,"agent":"plan","name":"foreman_status","arguments":{}})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn configured_native_chat_can_delegate_without_enablement() {
+    let mut f = Fixture::new();
+    repository(&f.directory.path().join("a"));
+    let w = f.call("foreman_workflow", &f.workflow("a")).unwrap();
+    assert_eq!(w["project"], "a");
+    assert!(
+        f.store
+            .query("SELECT * FROM chat_enablements", [])
+            .unwrap()
+            .is_empty()
+    );
+    let b = f.call("foreman_workflow", &f.workflow("b")).unwrap();
+    assert_eq!(b["project"], "b");
+    assert_eq!(b["foreman"], CHAT);
+    assert_eq!(
+        enable::dispatch_model(&f.store, &f.native, &json!({"foreman":CHAT})).unwrap(),
+        f.native.session.borrow()["model"]
+    );
+    f.native.session.borrow_mut()["model"] =
+        json!({"providerID":"native","id":"changed","variant":"low"});
+    assert_eq!(
+        enable::dispatch_model(&f.store, &f.native, &json!({"foreman":CHAT})).unwrap(),
+        f.native.session.borrow()["model"]
+    );
+    f.store.projects = json!({});
+    assert!(enable::dispatch_model(&f.store, &f.native, &json!({"foreman":CHAT})).is_err());
+}
+
+#[test]
+fn cross_project_work_progresses_under_the_original_native_home_identity() {
+    for (enabled, bound) in [(false, false), (false, true), (true, true)] {
+        let f = Fixture::new();
+        repository(&f.directory.path().join("b"));
+        if bound {
+            f.store.bind(CHAT, "terminal_a").unwrap();
+        }
+        if enabled {
+            f.enable();
+        }
+        let w = f.call("foreman_workflow", &f.workflow("b")).unwrap();
+        let mut runner = teem::checks::Runner::with_executable(std::path::PathBuf::from(env!(
+            "CARGO_BIN_EXE_teem"
+        )));
+        teem::workflows::tick(&f.store, &f.native, &mut runner).unwrap();
+        let progressed = f.store.workflow(&text(&w, "id")).unwrap();
+        assert_eq!(progressed["state"], "working", "{}", progressed["detail"]);
+        let tasks = f.store.tasks(None).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["foreman"], CHAT);
+        assert_eq!(tasks[0]["request"]["workflow_id"], w["id"]);
+        assert_eq!(f.native.session.borrow()["projectID"], "project_a");
+    }
+}
+
+#[test]
+fn automatic_access_preserves_existing_terminal_bindings_and_optional_model_capture() {
+    let f = Fixture::new();
+    f.store.bind(CHAT, "terminal_a").unwrap();
+    f.call("foreman_status", &json!({})).unwrap();
+    assert_eq!(f.store.binding(CHAT).unwrap()["terminal_id"], "terminal_a");
+    f.enable();
+    assert_eq!(
+        enable::dispatch_model(&f.store, &f.native, &json!({"foreman":CHAT})).unwrap(),
+        f.request()["model"]
+    );
+}
+
+#[test]
+fn optional_enablement_upgrades_only_the_automatic_session_marker() {
+    let f = Fixture::new();
+    f.call("foreman_status", &json!({})).unwrap();
+    assert_eq!(
+        f.store.binding(CHAT).unwrap()["terminal_id"],
+        format!("native-session:{CHAT}")
+    );
+    f.enable();
+    assert_eq!(f.store.binding(CHAT).unwrap()["terminal_id"], "terminal_a");
+    let mut herdr = f.herdr();
+    herdr["result"]["agent"]["terminal_id"] = json!("different");
+    assert!(enable::enable(&f.store, &f.native, &f.request(), &herdr).is_err());
+}
+
+#[test]
+fn existing_herdr_bind_action_can_upgrade_automatic_access_without_rebinding() {
+    let f = Fixture::new();
+    f.call("foreman_status", &json!({})).unwrap();
+    f.store.bind(CHAT, "terminal_a").unwrap();
+    assert_eq!(f.store.binding(CHAT).unwrap()["terminal_id"], "terminal_a");
+    assert!(f.store.bind(CHAT, "terminal_b").is_err());
+    assert_eq!(f.store.binding(CHAT).unwrap()["terminal_id"], "terminal_a");
+}
+
+#[test]
+fn automatic_cross_project_reconciliation_still_checks_candidate_eligibility() {
+    let f = Fixture::new();
+    f.call("foreman_status", &json!({})).unwrap();
+    repository(&f.directory.path().join("b"));
+    let source = plugin::call(&f.store, CHAT, "foreman_workflow", &f.workflow("b")).unwrap();
+    let workflows = f.store.workflows(CHAT).unwrap();
+    let tasks = f.store.tasks(None).unwrap();
+    let error = f.call("foreman_reconcile", &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":source["id"]})).unwrap_err();
+    assert!(!error.to_string().contains("enabled project"));
+    assert_eq!(f.store.workflows(CHAT).unwrap(), workflows);
+    assert_eq!(f.store.tasks(None).unwrap(), tasks);
+}
+
+#[test]
+fn unconfigured_optional_chat_can_later_enable_its_approved_policy() {
+    let mut f = Fixture::new();
+    let policies = f.store.projects.clone();
+    f.store.projects = json!({});
+    f.enable();
+    f.store.projects = policies;
+    assert_eq!(f.enable()["project"], "a");
+    assert_eq!(
+        f.store
+            .query("SELECT project FROM chat_enablements", [])
+            .unwrap()[0]["project"],
+        "a"
+    );
+}
+
+#[test]
+fn cross_project_admission_rejects_missing_target_checks_and_foreign_ownership() {
+    let mut f = Fixture::new();
+    f.enable();
+    let source = f.call("foreman_workflow", &f.workflow("b")).unwrap();
+    f.store
+        .exec(
+            "UPDATE workflows SET foreman='ses_other' WHERE id=?",
+            [text(&source, "id")],
+        )
+        .unwrap();
+    for tool in ["foreman_reconcile", "foreman_recover_qualification"] {
+        let args = if tool == "foreman_reconcile" {
+            json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":source["id"]})
+        } else {
+            json!({"recovery_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":source["id"],"expected_snapshot":"a".repeat(64)})
+        };
+        assert!(
+            f.call(tool, &args)
+                .unwrap_err()
+                .to_string()
+                .contains("another Foreman")
+        );
+    }
+    let before = f.store.query("SELECT * FROM workflows", []).unwrap();
+    f.store.projects["b"]["checks"] = json!([]);
+    assert!(teem::workflows::normalise_projects(&json!({"b":f.store.projects["b"]})).is_err());
+    f.store.projects.as_object_mut().unwrap().remove("b");
+    assert!(f.call("foreman_workflow", &f.workflow("b")).is_err());
+    assert_eq!(
+        f.store.query("SELECT * FROM workflows", []).unwrap(),
+        before
+    );
+    assert!(f.store.tasks(None).unwrap().is_empty());
+}
+
+#[test]
 fn missing_or_changed_native_identity_herdr_policy_and_model_fail_without_binding() {
     let f = Fixture::new();
     let original = f.native.session.borrow().clone();
@@ -205,8 +513,6 @@ fn policies_and_existing_receipts_cannot_silently_rebind_a_chat() {
         .as_object_mut()
         .unwrap()
         .remove("duplicate");
-    f.store.projects.as_object_mut().unwrap().remove("a");
-    assert!(enable::enable(&f.store, &f.native, &f.request(), &f.herdr()).is_err());
     f.store.projects["a"] = a;
     f.enable();
     let before = f.store.query("SELECT * FROM chat_enablements", []).unwrap();
@@ -262,7 +568,8 @@ fn dispatch_inherits_selected_model_then_native_changes_without_copying_permissi
     assert!(enable::dispatch_model(&f.store, &f.native, &task).is_err());
     f.native.session.borrow_mut()["agent"] = json!("build");
     f.store.projects["a"]["path"] = f.store.projects["b"]["path"].clone();
-    assert!(enable::authority(&f.store, &f.native, CHAT, "build").is_err());
+    assert!(enable::authority(&f.store, &f.native, CHAT, "build").is_ok());
+    assert!(enable::dispatch_model(&f.store, &f.native, &task).is_err());
 }
 
 #[test]
@@ -279,9 +586,9 @@ fn data_envelopes_and_missing_native_model_use_captured_ui_selection() {
 }
 
 #[test]
-fn native_tools_reject_legacy_and_cross_project_admission_without_side_effects() {
+fn native_tools_allow_configured_cross_project_work_but_reject_legacy_submission() {
     let mut f = Fixture::new();
-    assert!(f.call("foreman_status", &json!({})).is_err());
+    assert!(f.call("foreman_status", &json!({})).is_ok());
     f.enable();
     assert!(
         enable::tools()
@@ -308,14 +615,21 @@ fn native_tools_reject_legacy_and_cross_project_admission_without_side_effects()
             .to_string()
             .contains("legacy")
     );
-    assert!(
-        f.call("foreman_workflow", &f.workflow("b"))
-            .unwrap_err()
-            .to_string()
-            .contains("enabled project")
-    );
     assert!(f.store.workflows(CHAT).unwrap().is_empty());
     assert!(f.store.tasks(None).unwrap().is_empty());
+    let request_b = f.workflow("b");
+    let b = f.call("foreman_workflow", &request_b).unwrap();
+    assert_eq!(b["project"], "b");
+    assert_eq!(b["foreman"], CHAT);
+    assert_eq!(f.call("foreman_workflow", &request_b).unwrap(), b);
+    assert_eq!(
+        enable::authority(&f.store, &f.native, CHAT, "build").unwrap()["project"],
+        "a"
+    );
+    assert_eq!(
+        enable::dispatch_model(&f.store, &f.native, &json!({"foreman":CHAT})).unwrap(),
+        f.request()["model"]
+    );
     let request = f.workflow("a");
     let w = f.call("foreman_workflow", &request).unwrap();
     assert_eq!(w["request"]["issue"], "tidley/teem#1");
@@ -341,11 +655,10 @@ fn repository(path: &Path) -> String {
 }
 
 #[test]
-fn native_reconcile_checks_retained_source_project_before_dispatch_but_not_inspection() {
+fn native_reconcile_retains_configured_source_project_and_owner() {
     let f = Fixture::new();
     f.enable();
-    // A genuine eligible project-B candidate admitted through fixed MCP for the
-    // same Foreman. Merely checking Foreman ownership would incorrectly admit it.
+    // A genuine eligible project-B candidate owned by this project-A chat.
     let b = f.directory.path().join("b");
     let base = repository(&b);
     let w = plugin::call(&f.store, CHAT, "foreman_workflow", &f.workflow("b")).unwrap();
@@ -366,29 +679,66 @@ fn native_reconcile_checks_retained_source_project_before_dispatch_but_not_inspe
             ],
         )
         .unwrap();
-    let workflows = f.store.query("SELECT * FROM workflows", []).unwrap();
-    let tasks = f.store.tasks(None).unwrap();
     let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
-    assert!(
-        f.call("foreman_reconcile", &args)
-            .unwrap_err()
-            .to_string()
-            .contains("enabled project")
-    );
-    assert_eq!(
-        f.store.query("SELECT * FROM workflows", []).unwrap(),
-        workflows
-    );
-    assert_eq!(f.store.tasks(None).unwrap(), tasks);
     assert!(
         f.call("foreman_status", &json!({"workflow_id":w["id"]}))
             .is_ok()
     );
-    // Legacy fixed MCP retains its own binding; native restriction is not a new
-    // global gate or an edit to the reconciliation eligibility rules.
-    let successor = plugin::call(&f.store, CHAT, "foreman_reconcile", &args).unwrap();
+    let successor = f.call("foreman_reconcile", &args).unwrap();
     assert_eq!(successor["project"], "b");
+    assert_eq!(successor["foreman"], CHAT);
     assert_eq!(successor["request"]["issue"], "tidley/teem#1");
+    let mut runner =
+        teem::checks::Runner::with_executable(std::path::PathBuf::from(env!("CARGO_BIN_EXE_teem")));
+    teem::workflows::tick(&f.store, &f.native, &mut runner).unwrap();
+    let progressed = f.store.workflow(&text(&successor, "id")).unwrap();
+    assert_eq!(progressed["state"], "working", "{}", progressed["detail"]);
+}
+
+#[test]
+fn native_recovery_retry_is_read_only_after_policy_removal() {
+    let mut f = Fixture::new();
+    f.enable();
+    // Seed only the durable reservation here: recovery admission/provenance is
+    // exercised separately by issue20_recovery's setup-failure fixtures.
+    let source = f.call("foreman_workflow", &f.workflow("a")).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let args = json!({"recovery_id":id,"source_workflow_id":source["id"],"expected_snapshot":"a".repeat(64)});
+    let mut request = source["request"].clone();
+    request["workflow_id"] = json!(id);
+    request["qualification_recovery"] = json!({"arguments":args});
+    f.store
+        .exec(
+            "INSERT INTO workflows(id,foreman,project,request,policy,state,created) VALUES (?,?,?,?,?,'qualification_queued',?)",
+            params![
+                id,
+                CHAT,
+                "a",
+                canonical(&request),
+                canonical(&source["policy"]),
+                now()
+            ],
+        )
+        .unwrap();
+    let retained = f.store.workflow(&id).unwrap();
+    f.store.projects = json!({});
+    let rows = f.store.query("SELECT * FROM workflows", []).unwrap();
+    assert_eq!(
+        f.call("foreman_recover_qualification", &args).unwrap(),
+        retained
+    );
+    let mut changed = args.clone();
+    changed["expected_snapshot"] = json!("b".repeat(64));
+    assert!(f.call("foreman_recover_qualification", &changed).is_err());
+    assert!(
+        f.call(
+            "foreman_recover_qualification",
+            &json!({"recovery_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":source["id"],"expected_snapshot":"a".repeat(64)})
+        )
+        .is_err()
+    );
+    assert_eq!(f.store.query("SELECT * FROM workflows", []).unwrap(), rows);
+    assert!(f.store.tasks(None).unwrap().is_empty());
 }
 
 #[test]

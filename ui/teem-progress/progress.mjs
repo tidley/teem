@@ -162,15 +162,52 @@ export function parseProjection(value) {
   )) }
 }
 
-export function selectProgress(projection, sessionID, now = Date.now() / 1000) {
-  const session = projection?.sessions[sessionID]
+export function selectProgress(projection, sessionID, now = Date.now() / 1000, options) {
+  // Explicit read-only fallback for preserved work owned by a legacy chat.
+  // This never changes submission identity or overwrites a chat's own progress.
+  const own = projection?.sessions[sessionID]
+  const source = own && (own.todos.length || own.latest_result || own.groups?.length) ? sessionID : options?.progressSources?.[sessionID] ?? sessionID
+  const session = typeof source === 'string' ? projection?.sessions[source] : undefined
   if (!session) return undefined
-  return { todos: session.todos, ...(session.groups ? { groups: session.groups } : {}), ...latestResult(session.latest_result), passive: true,
+  return { todos: session.todos, ...(source !== sessionID ? { sourceSessionID: source } : {}), ...(session.groups ? { groups: session.groups } : {}), ...latestResult(session.latest_result), passive: true,
     stale: now - projection.updated_at > 15 || projection.updated_at > now + 5 }
+}
+
+export function resultNotice(progress) {
+  const result = progress?.latest_result
+  if (!result) return undefined
+  return { label: progress.stale ? 'Teem last result · status unavailable' :
+    result.state === 'ready' ? 'Teem result available' : 'Teem needs attention',
+    title: result.title, content: result.content }
+}
+
+// Local retrieval only: never submit another prompt or acknowledge an event.
+export function installResultCommand(context, select) {
+  context.keymap.layer(() => ({ commands: [{
+    id: 'teem.result', title: 'Teem: show latest result', group: 'Teem', palette: true,
+    slash: { name: 'teem-result' },
+    async run() {
+      const sessionID = context.ui.router.current()?.sessionID
+      const progress = sessionID ? select(sessionID) : undefined
+      const notice = resultNotice(progress)
+      await context.ui.dialog.alert(notice ? {
+        title: `${notice.label} · ${notice.title}`,
+        message: [progress.sourceSessionID ? 'Linked work · original owner retained' : '',
+          progress.stale ? 'Last observation; current status unavailable.' : '', notice.content].filter(Boolean).join('\n\n'),
+      } : { title: 'Teem result', message: sessionID ?
+        'No saved Teem result for this chat. Check foreman_status for work in progress or older history.' :
+        'Open the intended chat before /teem-result.' })
+    },
+  }] }))
 }
 
 // Same public message contract as OpenCode's native Todo panel. No synthetic
 // messages or tool calls are created. Non-Teem sessions keep their own todos.
+export function legacyTodoFallback(options) {
+  return options?.nativeTodos === true ||
+    (options?.nativeTodos !== false && typeof options?.stateFile === 'string')
+}
+
 export function nativeTodos(messages, revertID) {
   const boundary = revertID ? messages.findIndex(m => m.id === revertID) : -1
   const visible = boundary === -1 ? messages : messages.slice(0, boundary)

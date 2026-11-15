@@ -53,6 +53,12 @@ fn qualified(s: &Store, w: &Value) -> Result<Value> {
         w["state"] == "ready",
         "Only a ready workflow can be integrated"
     );
+    if w["request"].get("qualification_recovery").is_some() {
+        ensure!(
+            s.projects[text(w, "project")] == w["policy"],
+            "Recovery policy changed; explicit reconciliation/requalification is required"
+        );
+    }
     let round = w["data"]["rounds"]
         .as_array()
         .and_then(|a| a.last())
@@ -179,6 +185,13 @@ pub fn integrate(s: &Store, f: &str, args: &Value) -> Result<Value> {
         // A lost commit response is reconciled by reads, never a second commit.
         return committed(s, &w, &root, value);
     }
+    let commit_config = if commit_local {
+        Some(git_commit_identity(&root).context(
+            "Operator Git commit identity preflight failed; configure author/committer identity before integration. No new source changes were made",
+        )?)
+    } else {
+        None
+    };
     if !receipt(s, &id)?.is_null() {
         checkouts::validate(&root, &text(&w, "base_revision"), &text(&snapshot, "tree")).context(
             "Previous integration needs manual inspection; never repeat an uncertain apply",
@@ -209,7 +222,7 @@ pub fn integrate(s: &Store, f: &str, args: &Value) -> Result<Value> {
         value["applied_at"] = json!(now());
         save(s, &id, &value)?;
     }
-    if commit_local {
+    if let Some(commit_config) = commit_config {
         // write-tree can refresh cache-tree entries in its index. Inspect a
         // copy of the actual index so even a refusal leaves staged bytes intact.
         let index_path = PathBuf::from(git_text(&root, &["rev-parse", "--git-path", "index"])?);
@@ -244,11 +257,8 @@ pub fn integrate(s: &Store, f: &str, args: &Value) -> Result<Value> {
             git_text(&root, &["write-tree"])? == snapshot["tree"],
             "Staged tree differs from exact qualified candidate; inspect without retrying commit"
         );
-        git(
-            &root,
-            &["commit", "-m", &format!("Teem integrate workflow {id}")],
-            None,
-            None,
+        git_commit(&root, &format!("Teem integrate workflow {id}"), &commit_config).context(
+            "Local integration commit did not report success; inspect Git signing/identity settings and reconcile the reserved outcome without replay",
         )?;
         return committed(s, &w, &root, value);
     }

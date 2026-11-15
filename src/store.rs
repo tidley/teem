@@ -111,12 +111,17 @@ impl Store {
         self.transaction(|| {
             let old = self.query("SELECT * FROM foremen WHERE id=?", [foreman])?;
             ensure!(
-                old.first().is_none_or(|r| r["terminal_id"] == terminal),
+                old.first().is_none_or(|r| r["terminal_id"] == terminal
+                    || r["terminal_id"] == format!("native-session:{foreman}")),
                 "Foreman terminal changed; inspect binding before replacing it"
             );
             self.exec(
                 "INSERT OR IGNORE INTO foremen (id, terminal_id) VALUES (?,?)",
                 params![foreman, terminal],
+            )?;
+            self.exec(
+                "UPDATE foremen SET terminal_id=? WHERE id=? AND terminal_id=?",
+                params![terminal, foreman, format!("native-session:{foreman}")],
             )?;
             Ok(())
         })
@@ -193,6 +198,10 @@ impl Store {
         let Some(w) = rows.first() else {
             return Ok(false);
         };
+        let workflow = self.workflow(&text(w, "id"))?;
+        if workflow["request"].get("qualification_recovery").is_some() {
+            crate::recovery::validate_current(self, &workflow)?;
+        }
         Ok([
             "preparing",
             "working",
@@ -252,6 +261,10 @@ impl Store {
             );
             let workflow =
                 self.workflow(req["workflow_id"].as_str().context("Invalid workflow ID")?)?;
+            ensure!(
+                role != "worker" || workflow["request"].get("qualification_recovery").is_none(),
+                "Qualification recovery cannot dispatch implementation or correction workers"
+            );
             if role == "worker" {
                 if let Some(paths) = workflow["policy"].get("reference_paths") {
                     ensure!(

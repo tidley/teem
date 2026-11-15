@@ -22,6 +22,8 @@ fn repo(path: &Path) -> String {
     fs::create_dir_all(path).unwrap();
     git(path, &["init", "-q"], None, None).unwrap();
     git(path, &["config", "user.name", "Test"], None, None).unwrap();
+    // Operator-commit tests must never invoke a real user's configured signer.
+    git(path, &["config", "commit.gpgsign", "false"], None, None).unwrap();
     git(
         path,
         &["config", "user.email", "test@example.invalid"],
@@ -180,12 +182,32 @@ fn frozen_legacy_wire_and_digest_contracts_match() {
         ("workflow_event", "workflow_payload"),
     ] {
         let mut payload = runtime::event_payload(&f[event]).unwrap();
-        assert!(text(&payload, "text").starts_with(&text(&f[key], "text")));
+        if event == "event" {
+            assert!(text(&payload, "text").starts_with(&text(&f[key], "text")));
+        } else {
+            assert!(
+                !text(&payload, "text").contains("Do not refresh the checklist, dispatch agents")
+            );
+            assert!(text(&payload, "text").contains("eligible bounded same-task continuation"));
+            assert!(text(&payload, "text").contains("briefly report engineering decisions"));
+        }
         assert!(text(&payload, "text").contains("without ack"));
         payload["text"] = f[key]["text"].clone();
         assert_eq!(payload, f[key]);
     }
     assert_eq!(digest(&f["canonical_value"]), f["canonical_digest"]);
+}
+
+#[test]
+fn completion_respects_existing_authority_without_granting_new_actions() {
+    let f: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
+    let payload = runtime::event_payload(&f["workflow_event"]).unwrap();
+    let instruction = text(&payload, "text");
+    assert!(instruction.contains("Existing explicit task approval remains usable"));
+    assert!(instruction.contains("This notification grants no new authority"));
+    assert!(instruction.contains("integration, local commit, publication or deployment needs its own existing explicit authority"));
+    assert!(!instruction.contains("Do not invent tasks, silently renew budgets, replay uncertain work, approve permissions, integrate, merge or publish."));
+    assert!(instruction.contains("proposed, implemented and verified fixes"));
 }
 
 #[test]
@@ -689,6 +711,458 @@ fn approved_local_commit_records_exact_candidate_and_is_idempotent() {
     );
 }
 
+fn operator_config_case(case: &str) {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let config = if case == "missing" {
+        "[user]\nuseConfigOnly = true\n"
+    } else if case == "signing" {
+        "[user]\nname = Operator Fixture\nemail = operator@example.invalid\n[commit]\ngpgSign\n[gpg]\nprogram = /usr/bin/false\n"
+    } else {
+        "[user]\nname = Operator Fixture\nemail = operator@example.invalid\n[commit]\ngpgSign = false\n"
+    };
+    fs::write(home.join(".gitconfig"), config).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "operator_commit_config_child", "--nocapture"])
+        .env_clear()
+        .current_dir(tmp.path())
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", tmp.path().join("config"))
+        .env("XDG_DATA_HOME", tmp.path().join("data"))
+        .env("XDG_STATE_HOME", tmp.path().join("state"))
+        .env("XDG_CACHE_HOME", tmp.path().join("cache"))
+        .env("HERDR_PLUGIN_CONFIG_DIR", tmp.path().join("herdr"))
+        .env("TMPDIR", std::env::temp_dir())
+        .env("GIT_AUTHOR_NAME", "Untrusted ambient author")
+        .env("GIT_AUTHOR_EMAIL", "ambient@example.invalid")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "user.name")
+        .env("GIT_CONFIG_VALUE_0", "Untrusted ambient config")
+        .env("TEEM_OPERATOR_CONFIG_CASE", case)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "case {case}: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn operator_commit_uses_configured_global_identity_and_keeps_local_precedence() {
+    for case in ["global", "local"] {
+        operator_config_case(case);
+    }
+}
+
+#[test]
+fn missing_operator_identity_refuses_before_apply_or_staging() {
+    operator_config_case("missing");
+}
+
+#[test]
+fn operator_commit_does_not_bypass_configured_signing() {
+    operator_config_case("signing");
+}
+
+#[test]
+fn operator_commit_rejects_identity_added_by_candidate_config_include() {
+    operator_config_case("snapshot");
+}
+
+#[test]
+fn operator_commit_config_child() {
+    let Ok(case) = std::env::var("TEEM_OPERATOR_CONFIG_CASE") else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    if case == "snapshot" {
+        let root = tmp.path().join("source");
+        repo(&root);
+        let included = root.join("src/operator.conf");
+        fs::write(&included, "# original operator include\n").unwrap();
+        git(
+            &root,
+            &["config", "include.path", "../src/operator.conf"],
+            None,
+            None,
+        )
+        .unwrap();
+        git(&root, &["add", "."], None, None).unwrap();
+        git(&root, &["commit", "-qm", "include fixture"], None, None).unwrap();
+        let head = git_text(&root, &["rev-parse", "HEAD"]).unwrap();
+        let config = git_commit_identity(&root).unwrap();
+        fs::write(&included, "[author]\nname = Candidate\nemail = candidate@example.invalid\n[committer]\nname = Candidate\nemail = candidate@example.invalid\n").unwrap();
+        git(&root, &["add", "."], None, None).unwrap();
+        assert!(git_commit(&root, "must not adopt candidate identity", &config).is_err());
+        assert_eq!(git_text(&root, &["rev-parse", "HEAD"]).unwrap(), head);
+        return;
+    }
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let root = tmp.path().join("source");
+    if !["local", "signing"].contains(&case.as_str()) {
+        for key in ["user.name", "user.email"] {
+            git(&root, &["config", "--unset-all", key], None, None).unwrap();
+        }
+    }
+    if case == "signing" {
+        git(
+            &root,
+            &["config", "--unset-all", "commit.gpgsign"],
+            None,
+            None,
+        )
+        .unwrap();
+    }
+    let base = git_text(&root, &["rev-parse", "HEAD"]).unwrap();
+    let index = fs::read(root.join(".git/index")).unwrap();
+    let result = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_integrate",
+        &json!({"workflow_id":w["id"],"commit_local":true}),
+    );
+    if case == "missing" {
+        assert!(result.is_err());
+        assert!(format!("{:#}", result.unwrap_err()).contains("identity"));
+        assert!(
+            teem::operator::receipt(&s, &text(&w, "id"))
+                .unwrap()
+                .is_null()
+        );
+        assert_eq!(fs::read_to_string(root.join("src/a")).unwrap(), "base\n");
+        assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+        assert_eq!(git_text(&root, &["rev-parse", "HEAD"]).unwrap(), base);
+    } else if case == "signing" {
+        assert!(
+            result.is_err(),
+            "configured signing must not be silently disabled"
+        );
+        assert_eq!(
+            teem::operator::receipt(&s, &text(&w, "id")).unwrap()["state"],
+            "committing"
+        );
+        assert_eq!(git_text(&root, &["rev-parse", "HEAD"]).unwrap(), base);
+        let index = fs::read(root.join(".git/index")).unwrap();
+        assert!(
+            plugin::call(
+                &s,
+                "ses_test",
+                "foreman_integrate",
+                &json!({"workflow_id":w["id"],"commit_local":true})
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+        assert_eq!(git_text(&root, &["rev-parse", "HEAD"]).unwrap(), base);
+        assert_eq!(
+            teem::operator::receipt(&s, &text(&w, "id")).unwrap()["state"],
+            "committing"
+        );
+    } else {
+        assert_eq!(result.unwrap()["state"], "committed");
+        let expected = if case == "local" {
+            "Test <test@example.invalid>"
+        } else {
+            "Operator Fixture <operator@example.invalid>"
+        };
+        assert_eq!(
+            git_text(&root, &["log", "-1", "--format=%an <%ae>"]).unwrap(),
+            expected
+        );
+        assert_eq!(
+            git_text(&root, &["log", "-1", "--format=%cn <%ce>"]).unwrap(),
+            expected
+        );
+    }
+}
+
+fn blocked_review_fixture(tmp: &Path) -> (Store, Fake, Value) {
+    let (s, f, w) = workflow_fixture(tmp, false);
+    let id = text(&w, "id");
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    await_receipt(&w["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    for review in array(&w["data"]["rounds"][0]["review_ids"]) {
+        let output = json!({"snapshot":w["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"changes_requested","findings":[{"path":"src/a","line":1,"message":"x".repeat(501)}]});
+        s.update(
+            review.as_str().unwrap(),
+            "succeeded",
+            &canonical(&output),
+            "",
+        )
+        .unwrap();
+    }
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let w = s.workflow(&id).unwrap();
+    assert_eq!(w["state"], "blocked");
+    assert!(w["data"]["rounds"][0].get("review_results").is_none());
+    (s, f, w)
+}
+
+#[test]
+fn blocked_review_reports_the_exact_format_error_without_accepting_it() {
+    let snapshot = json!({"sha256":"a".repeat(64)});
+    let output = json!({"snapshot":snapshot["sha256"],"verdict":"changes_requested","findings":[{"path":"src/a","line":1,"message":"x".repeat(501)}]});
+    let error = workflows::verdict(&canonical(&output), &snapshot)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("Finding 1 message has 501 characters; maximum is 500"),
+        "{error}"
+    );
+}
+
+#[test]
+fn blocked_review_handoff_preserves_evidence_and_runs_fresh_pipeline() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = blocked_review_fixture(tmp.path());
+    let parent = s.workflow(&text(&w, "id")).unwrap();
+    let old_tasks = s.tasks(None).unwrap();
+    let mut args =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    let mut setup = args.clone();
+    setup["setup_snapshot"] = w["data"]["rounds"][0]["snapshot"]["sha256"].clone();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &setup).is_err());
+    args["blocked_snapshot"] = w["data"]["rounds"][0]["snapshot"]["sha256"].clone();
+    let child = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(child["state"], "queued");
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap(),
+        child
+    );
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let child = s.workflow(&text(&child, "id")).unwrap();
+    assert_eq!(child["state"], "working", "{child}");
+    let checkout = PathBuf::from(text(&child["data"]["rounds"][0], "checkout"));
+    let notes = read_json(&checkout.join(".git/teem-reconciliation.json")).unwrap();
+    assert_eq!(
+        notes["unqualified_review_outputs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(notes["review_results"].is_null());
+    assert!(
+        notes["unqualified_review_outputs"][0]["result"]
+            .as_str()
+            .unwrap()
+            .contains(&"x".repeat(501))
+    );
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let child = s.workflow(&text(&child, "id")).unwrap();
+    await_receipt(&child["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let child = s.workflow(&text(&child, "id")).unwrap();
+    assert_eq!(child["state"], "reviewing");
+    assert_ne!(
+        child["data"]["rounds"][0]["check_handle"],
+        w["data"]["rounds"][0]["check_handle"]
+    );
+    assert_ne!(
+        child["data"]["rounds"][0]["review_ids"],
+        w["data"]["rounds"][0]["review_ids"]
+    );
+    for review in array(&child["data"]["rounds"][0]["review_ids"]) {
+        s.update(review.as_str().unwrap(), "succeeded", &canonical(&json!({"snapshot":child["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"pass","findings":[]})), "").unwrap();
+    }
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    assert_eq!(s.workflow(&text(&child, "id")).unwrap()["state"], "ready");
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap(), parent);
+    for task in old_tasks {
+        assert_eq!(s.task(&text(&task, "id")).unwrap(), task);
+    }
+}
+
+#[test]
+fn blocked_review_handoff_removes_qualification_only_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, mut w) = blocked_review_fixture(tmp.path());
+    w["request"]["qualification_recovery"] =
+        json!({"source_workflow_id":uuid::Uuid::new_v4().to_string()});
+    s.exec(
+        "UPDATE workflows SET request=? WHERE id=?",
+        rusqlite::params![canonical(&w["request"]), text(&w, "id")],
+    )
+    .unwrap();
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"],"blocked_snapshot":w["data"]["rounds"][0]["snapshot"]["sha256"]});
+    let child = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert!(child["request"].get("qualification_recovery").is_none());
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    assert_eq!(s.workflow(&text(&child, "id")).unwrap()["state"], "working");
+}
+
+#[test]
+fn blocked_review_handoff_rejects_unsafe_sources() {
+    for case in [
+        "digest",
+        "active",
+        "uncertain",
+        "paused",
+        "receipt",
+        "missing-receipt",
+        "missing-handle",
+        "missing-review",
+        "foreign-review",
+        "wrong-tree",
+        "scope",
+        "integrated",
+        "source-drift",
+        "lineage-task",
+        "lineage-workflow",
+        "pending-stop",
+        "non-string",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (s, _, mut w) = blocked_review_fixture(tmp.path());
+        let mut args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"],"blocked_snapshot":w["data"]["rounds"][0]["snapshot"]["sha256"]});
+        let review = w["data"]["rounds"][0]["review_ids"][0]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        match case {
+            "digest" => args["blocked_snapshot"] = json!("0".repeat(64)),
+            "active" | "uncertain" => {
+                s.exec(
+                    "UPDATE tasks SET state=? WHERE id=?",
+                    rusqlite::params![
+                        if case == "active" {
+                            "running"
+                        } else {
+                            "uncertain"
+                        },
+                        review
+                    ],
+                )
+                .unwrap();
+            }
+            "paused" => {
+                s.exec("INSERT INTO workflow_stops VALUES (?,0)", [text(&w, "id")])
+                    .unwrap();
+            }
+            "receipt" => {
+                fs::write(
+                    text(&w["data"]["rounds"][0]["check_handle"], "receipt"),
+                    "{}",
+                )
+                .unwrap();
+            }
+            "missing-receipt" => {
+                fs::remove_file(text(&w["data"]["rounds"][0]["check_handle"], "receipt")).unwrap();
+            }
+            "missing-handle" => {
+                w["data"]["rounds"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("check_handle");
+            }
+            "missing-review" => {
+                w["data"]["rounds"][0]["review_ids"] = json!([]);
+            }
+            "foreign-review" => {
+                s.exec(
+                    "UPDATE tasks SET foreman='ses_foreign' WHERE id=?",
+                    [&review],
+                )
+                .unwrap();
+            }
+            "wrong-tree" => {
+                s.exec(
+                    "UPDATE tasks SET request=json_set(request,'$.input_tree','wrong') WHERE id=?",
+                    [&review],
+                )
+                .unwrap();
+            }
+            "scope" => {
+                w["request"]["scope"] = json!(["outside"]);
+                s.exec(
+                    "UPDATE workflows SET request=? WHERE id=?",
+                    rusqlite::params![canonical(&w["request"]), text(&w, "id")],
+                )
+                .unwrap();
+            }
+            "integrated" => {
+                s.exec(
+                    "INSERT INTO integrations(workflow_id,receipt) VALUES (?,'{}')",
+                    [text(&w, "id")],
+                )
+                .unwrap();
+            }
+            "source-drift" => {
+                fs::write(tmp.path().join("source/src/a"), "dirty\n").unwrap();
+            }
+            "lineage-task" | "lineage-workflow" => {
+                let mut req = w["request"].clone();
+                let sibling = uuid::Uuid::new_v4().to_string();
+                req["workflow_id"] = json!(sibling);
+                req["reconcile_root"] = w["id"].clone();
+                s.workflow_submit("ses_test", req).unwrap();
+                if case == "lineage-task" {
+                    s.exec(
+                        "UPDATE workflows SET state='blocked' WHERE id=?",
+                        [&sibling],
+                    )
+                    .unwrap();
+                    s.exec("UPDATE tasks SET request=json_set(request,'$.workflow_id',?),state='uncertain' WHERE id=?",rusqlite::params![sibling,review]).unwrap();
+                }
+            }
+            "pending-stop" => {
+                s.exec(
+                    "INSERT INTO task_stops VALUES (?,'uncertain','')",
+                    [&review],
+                )
+                .unwrap();
+            }
+            "non-string" => args["blocked_snapshot"] = json!(true),
+            _ => unreachable!(),
+        }
+        s.exec(
+            "UPDATE workflows SET data=? WHERE id=?",
+            rusqlite::params![canonical(&w["data"]), text(&w, "id")],
+        )
+        .unwrap();
+        assert!(
+            plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err(),
+            "admitted {case}"
+        );
+        assert_eq!(
+            s.workflows("ses_test").unwrap().len(),
+            if case.starts_with("lineage-") { 2 } else { 1 },
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn blocked_review_handoff_revalidates_before_seeding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = blocked_review_fixture(tmp.path());
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"],"blocked_snapshot":w["data"]["rounds"][0]["snapshot"]["sha256"]});
+    let child = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    let count = s.tasks(None).unwrap().len();
+    fs::write(
+        text(&w["data"]["rounds"][0]["check_handle"], "receipt"),
+        "{}",
+    )
+    .unwrap();
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    assert_eq!(s.workflow(&text(&child, "id")).unwrap()["state"], "blocked");
+    assert_eq!(s.tasks(None).unwrap().len(), count);
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap(), w);
+}
+
 // Retain an actual checked candidate with one snapshot-bound pass and one
 // uncertain native reviewer, then stop the latter through the managed path.
 fn stopped_candidate_fixture(tmp: &Path) -> (Store, Fake, Value) {
@@ -743,6 +1217,365 @@ fn stopped_candidate_fixture(tmp: &Path) -> (Store, Fake, Value) {
         "interrupted"
     );
     (s, f, w)
+}
+
+fn stopped_unseeded_fixture(tmp: &Path) -> (Store, Fake, Value, Value) {
+    let (s, origin) = ready_operator_fixture(tmp);
+    stop_unseeded_input(tmp, s, origin)
+}
+
+fn stop_unseeded_input(tmp: &Path, s: Store, origin: Value) -> (Store, Fake, Value, Value) {
+    let source = tmp.join("source");
+    fs::write(source.join("src/a"), "newer conflicting source\n").unwrap();
+    git(&source, &["add", "."], None, None).unwrap();
+    git(&source, &["commit", "-qm", "advance"], None, None).unwrap();
+    let f = Fake {
+        directory: source.to_str().unwrap().into(),
+        ..Default::default()
+    };
+    let mut args =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":origin["id"]});
+    if origin["state"] == "blocked" {
+        args["setup_snapshot"] = origin["data"]["rounds"][0]["snapshot"]["sha256"].clone();
+    }
+    let child = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let child = s.workflow(&text(&child, "id")).unwrap();
+    let round = &child["data"]["rounds"][0];
+    let checkout = PathBuf::from(text(round, "checkout"));
+    assert_eq!(
+        read_json(&checkout.join(".git/teem-reconciliation.json")).unwrap()["seeded"],
+        false
+    );
+    runtime::tick(&s, &f).unwrap();
+    *f.stop_live.borrow_mut() = true;
+    plugin::call(
+        &s,
+        "ses_test",
+        "foreman_stop",
+        &json!({"workflow_id":child["id"],"task_id":round["worker_id"]}),
+    )
+    .unwrap();
+    teem::control::tick(&s, &f).unwrap();
+    teem::control::tick(&s, &f).unwrap();
+    let stopped = s.workflow(&text(&child, "id")).unwrap();
+    assert_eq!(stopped["stop"]["state"], "stopped");
+    assert!(stopped["data"]["rounds"][0].get("snapshot").is_none());
+    (s, f, origin, stopped)
+}
+
+#[test]
+fn stopped_unseeded_extension_preserves_legacy_reconciliation_retries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, origin) = ready_operator_fixture(tmp.path());
+    let args =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":origin["id"]});
+    let child = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    let mut legacy = child["request"].clone();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("reconcile_candidate_source");
+    s.exec(
+        "UPDATE workflows SET request=? WHERE id=?",
+        rusqlite::params![canonical(&legacy), text(&child, "id")],
+    )
+    .unwrap();
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap(),
+        s.workflow(&text(&child, "id")).unwrap()
+    );
+}
+
+#[test]
+fn stopped_unseeded_handoff_retains_real_ancestor_patch_and_requalifies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, origin, stopped) = stopped_unseeded_fixture(tmp.path());
+    let tasks = s.tasks(None).unwrap();
+    let args =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":stopped["id"]});
+    let child = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(child["request"]["reconcile_from"], stopped["id"]);
+    assert_eq!(child["request"]["reconcile_candidate_source"], origin["id"]);
+    assert_eq!(
+        child["request"]["reconcile_snapshot"],
+        origin["data"]["rounds"][0]["snapshot"]["sha256"]
+    );
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap(),
+        child
+    );
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let working = s.workflow(&text(&child, "id")).unwrap();
+    assert_eq!(working["state"], "working", "{working}");
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap(),
+        working
+    );
+    let checkout = PathBuf::from(text(&working["data"]["rounds"][0], "checkout"));
+    let notes = read_json(&checkout.join(".git/teem-reconciliation.json")).unwrap();
+    assert_eq!(notes["source_workflow_id"], stopped["id"]);
+    assert_eq!(notes["candidate_source_workflow_id"], origin["id"]);
+    assert_eq!(notes["seeded"], false);
+    assert_eq!(
+        fs::read(checkout.join(".git/teem-reconciliation.patch")).unwrap(),
+        checkouts::verify(&origin["data"]["rounds"][0]["snapshot"]).unwrap()
+    );
+    fs::write(checkout.join("src/a"), "reconciled newer source\n").unwrap();
+    s.update(
+        working["data"]["rounds"][0]["worker_id"].as_str().unwrap(),
+        "succeeded",
+        "scoped reconciliation",
+        "",
+    )
+    .unwrap();
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let checking = s.workflow(&text(&child, "id")).unwrap();
+    assert_eq!(checking["state"], "checking");
+    await_receipt(&checking["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let reviewing = s.workflow(&text(&child, "id")).unwrap();
+    assert_eq!(reviewing["state"], "reviewing");
+    let ids = array(&reviewing["data"]["rounds"][0]["review_ids"]);
+    assert_eq!(ids.len(), 2);
+    for id in ids {
+        s.update(id.as_str().unwrap(), "succeeded", &canonical(&json!({"snapshot":reviewing["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"pass","findings":[]})), "").unwrap();
+    }
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    assert_eq!(s.workflow(&text(&child, "id")).unwrap()["state"], "ready");
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap()["state"],
+        "ready"
+    );
+    assert_eq!(s.workflow(&text(&origin, "id")).unwrap(), origin);
+    assert_eq!(s.workflow(&text(&stopped, "id")).unwrap(), stopped);
+    for task in tasks {
+        assert_eq!(s.task(&text(&task, "id")).unwrap(), task);
+    }
+}
+
+#[test]
+fn stopped_unseeded_handoff_rejects_changed_or_uncertain_inputs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, origin, stopped) = stopped_unseeded_fixture(tmp.path());
+    let round = &stopped["data"]["rounds"][0];
+    let checkout = PathBuf::from(text(round, "checkout"));
+    let worker = s.task(round["worker_id"].as_str().unwrap()).unwrap();
+    let patch = checkout.join(".git/teem-reconciliation.patch");
+    let original_patch = fs::read(&patch).unwrap();
+    for case in [
+        "edit",
+        "staged-only",
+        "untracked",
+        "patch",
+        "notes",
+        "unknown-stop",
+        "active-worker",
+        "wrong-input",
+        "wrong-scope",
+        "wrong-owner",
+        "source-drift",
+    ] {
+        let notes = checkout.join(".git/teem-reconciliation.json");
+        let old_notes = fs::read(&notes).unwrap();
+        match case {
+            "edit" => fs::write(checkout.join("src/a"), "new worker edits\n").unwrap(),
+            "staged-only" => {
+                fs::write(checkout.join("src/a"), "retained staged edits\n").unwrap();
+                git(&checkout, &["add", "src/a"], None, None).unwrap();
+                fs::write(checkout.join("src/a"), "newer conflicting source\n").unwrap();
+            }
+            "untracked" => fs::write(checkout.join("src/untracked"), "keep me\n").unwrap(),
+            "patch" => fs::write(&patch, "changed").unwrap(),
+            "notes" => {
+                let mut n: Value = serde_json::from_slice(&old_notes).unwrap();
+                n["seeded"] = json!(true);
+                fs::write(&notes, canonical(&n)).unwrap();
+            }
+            "unknown-stop" => {
+                s.exec(
+                    "UPDATE task_stops SET state='uncertain' WHERE task_id=?",
+                    [text(&worker, "id")],
+                )
+                .unwrap();
+            }
+            "active-worker" => {
+                s.exec(
+                    "UPDATE tasks SET state='running' WHERE id=?",
+                    [text(&worker, "id")],
+                )
+                .unwrap();
+            }
+            "wrong-input" | "wrong-scope" | "wrong-owner" => {
+                let mut q = worker["request"].clone();
+                if case == "wrong-input" {
+                    q["input_tree"] = json!("0".repeat(40));
+                }
+                if case == "wrong-scope" {
+                    q["scope"] = json!(["outside"]);
+                }
+                s.exec(
+                    "UPDATE tasks SET request=?,foreman=? WHERE id=?",
+                    rusqlite::params![
+                        canonical(&q),
+                        if case == "wrong-owner" {
+                            "ses_foreign"
+                        } else {
+                            "ses_test"
+                        },
+                        text(&worker, "id")
+                    ],
+                )
+                .unwrap();
+            }
+            "source-drift" => fs::write(tmp.path().join("source/src/a"), "dirty source\n").unwrap(),
+            _ => unreachable!(),
+        }
+        let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":stopped["id"]});
+        assert!(
+            plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err(),
+            "admitted {case}"
+        );
+        if case == "staged-only" {
+            assert_eq!(
+                git_text(&checkout, &["show", ":src/a"]).unwrap(),
+                "retained staged edits"
+            );
+        }
+        // Restore only files/rows created in this private fixture.
+        fs::write(checkout.join("src/a"), "newer conflicting source\n").unwrap();
+        if case == "staged-only" {
+            git(&checkout, &["add", "src/a"], None, None).unwrap();
+        }
+        if case == "untracked" {
+            fs::remove_file(checkout.join("src/untracked")).unwrap();
+        }
+        fs::write(&patch, &original_patch).unwrap();
+        fs::write(&notes, &old_notes).unwrap();
+        fs::write(
+            tmp.path().join("source/src/a"),
+            "newer conflicting source\n",
+        )
+        .unwrap();
+        s.exec(
+            "UPDATE tasks SET request=?,foreman=?,state=? WHERE id=?",
+            rusqlite::params![
+                canonical(&worker["request"]),
+                text(&worker, "foreman"),
+                text(&worker, "state"),
+                text(&worker, "id")
+            ],
+        )
+        .unwrap();
+        s.exec(
+            "UPDATE task_stops SET state='stopped' WHERE task_id=?",
+            [text(&worker, "id")],
+        )
+        .unwrap();
+    }
+    assert_eq!(s.workflow(&text(&origin, "id")).unwrap(), origin);
+    let valid =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":stopped["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &valid).is_ok());
+}
+
+#[test]
+fn stopped_unseeded_handoff_rechecks_stop_and_input_before_seeding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, _, stopped) = stopped_unseeded_fixture(tmp.path());
+    let args =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":stopped["id"]});
+    let child = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    let count = s.tasks(None).unwrap().len();
+    let checkout = PathBuf::from(text(&stopped["data"]["rounds"][0], "checkout"));
+    fs::write(checkout.join("src/a"), "late edit, must not lose\n").unwrap();
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    assert_eq!(s.workflow(&text(&child, "id")).unwrap()["state"], "blocked");
+    assert_eq!(s.tasks(None).unwrap().len(), count);
+}
+
+#[test]
+fn stopped_unseeded_handoff_rechecks_staged_only_edits_before_seeding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, _, stopped) = stopped_unseeded_fixture(tmp.path());
+    let args =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":stopped["id"]});
+    let child = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    let count = s.tasks(None).unwrap().len();
+    let checkout = PathBuf::from(text(&stopped["data"]["rounds"][0], "checkout"));
+    fs::write(checkout.join("src/a"), "late staged edit\n").unwrap();
+    git(&checkout, &["add", "src/a"], None, None).unwrap();
+    fs::write(checkout.join("src/a"), "newer conflicting source\n").unwrap();
+    let index = fs::read(checkout.join(".git/index")).unwrap();
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    assert_eq!(s.workflow(&text(&child, "id")).unwrap()["state"], "blocked");
+    assert_eq!(s.tasks(None).unwrap().len(), count);
+    assert_eq!(fs::read(checkout.join(".git/index")).unwrap(), index);
+}
+
+#[test]
+fn stopped_unseeded_handoff_retains_setup_blocked_source_proof() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    finish_workers(&s);
+    let mut missing = checks::Runner::with_executable(tmp.path().join("missing-helper"));
+    workflows::tick(&s, &f, &mut missing).unwrap();
+    let origin = s.workflow(&text(&w, "id")).unwrap();
+    assert_eq!(origin["state"], "blocked");
+    let (s, f, origin, stopped) = stop_unseeded_input(tmp.path(), s, origin);
+    let args =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":stopped["id"]});
+    let child = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    assert_eq!(s.workflow(&text(&child, "id")).unwrap()["state"], "working");
+    assert_eq!(s.workflow(&text(&origin, "id")).unwrap(), origin);
+    assert_eq!(s.workflow(&text(&stopped, "id")).unwrap(), stopped);
+}
+
+#[test]
+fn stopped_unseeded_handoff_rejects_live_siblings_and_unresolved_checks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, origin, stopped) = stopped_unseeded_fixture(tmp.path());
+    let mut req = origin["request"].clone();
+    req["workflow_id"] = json!(uuid::Uuid::new_v4().to_string());
+    req["reconcile_root"] = origin["id"].clone();
+    let sibling = s.workflow_submit("ses_test", req).unwrap();
+    let args =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":stopped["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    s.exec(
+        "UPDATE workflows SET state='blocked' WHERE id=?",
+        [text(&sibling, "id")],
+    )
+    .unwrap();
+    let reviewer = s
+        .task(
+            origin["data"]["rounds"][0]["review_ids"][0]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+    s.exec(
+        "UPDATE tasks SET state='uncertain' WHERE id=?",
+        [text(&reviewer, "id")],
+    )
+    .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    s.exec(
+        "UPDATE tasks SET state='succeeded' WHERE id=?",
+        [text(&reviewer, "id")],
+    )
+    .unwrap();
+    let receipt = PathBuf::from(text(
+        &origin["data"]["rounds"][0]["check_handle"],
+        "receipt",
+    ));
+    let bytes = fs::read(&receipt).unwrap();
+    fs::remove_file(&receipt).unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err());
+    fs::write(&receipt, bytes).unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_ok());
 }
 
 #[test]
@@ -1146,6 +1979,192 @@ fn blocked_continuation_with_live_worker_prevents_another_reconciliation() {
         json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
     assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &another).is_err());
     assert_eq!(s.task(&task).unwrap()["state"], "running");
+}
+
+fn failed_next_preparation_fixture(tmp: &Path) -> (Store, Value) {
+    let (s, mut w) = ready_operator_fixture(tmp);
+    w["round"] = json!(1);
+    s.save_workflow(
+        &mut w,
+        "blocked",
+        "Managed Git timed out; preserve checkout",
+    )
+    .unwrap();
+    let partial = s
+        .directory
+        .join("managed")
+        .join(text(&w, "id"))
+        .join("round-1/worker/.git/objects/pack");
+    fs::create_dir_all(&partial).unwrap();
+    fs::write(
+        partial.join("tmp_pack_retained"),
+        "incomplete pack evidence",
+    )
+    .unwrap();
+    (s, w)
+}
+
+fn inject_next_round_reservation(s: &Store, w: &Value, state: &str) {
+    let id = uuid::Uuid::new_v5(
+        &uuid::Uuid::parse_str(&text(w, "id")).unwrap(),
+        b"round:1:worker",
+    )
+    .to_string();
+    s.exec("INSERT INTO tasks(id,foreman,role,checkout,state,request,session_id,prompt_id,sparse,result,detail,created,runtime_model,trusted_worker_shell) SELECT ?,foreman,role,checkout,?,request,?,?,sparse,result,detail,created,runtime_model,trusted_worker_shell FROM tasks WHERE id=?", rusqlite::params![id,state,format!("ses_reserved_{id}"),format!("msg_reserved_{id}"),text(&w["data"]["rounds"][0],"worker_id")]).unwrap();
+}
+
+#[test]
+fn failed_next_preparation_continues_without_reusing_partial_checkout_or_qualification() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = failed_next_preparation_fixture(tmp.path());
+    let before = s.workflow(&text(&w, "id")).unwrap();
+    let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    let next = plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap(),
+        next
+    );
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_reconcile",
+            &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]})
+        )
+        .is_err()
+    );
+    let f = Fake {
+        directory: tmp.path().join("source").to_str().unwrap().into(),
+        ..Default::default()
+    };
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let next = s.workflow(&text(&next, "id")).unwrap();
+    assert_eq!(next["state"], "working");
+    assert_eq!(next["request"]["reconcile_from"], w["id"]);
+    assert!(next["data"]["rounds"][0].get("check_result").is_none());
+    assert!(next["data"]["rounds"][0].get("review_ids").is_none());
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(
+            s.directory
+                .join("managed")
+                .join(text(&w, "id"))
+                .join("round-1/worker/.git/objects/pack/tmp_pack_retained")
+        )
+        .unwrap(),
+        "incomplete pack evidence"
+    );
+}
+
+#[test]
+fn failed_next_preparation_rejects_any_reserved_worker_and_other_blocked_states() {
+    for state in [
+        "queued",
+        "starting",
+        "accepted",
+        "running",
+        "uncertain",
+        "succeeded",
+        "failed",
+        "interrupted",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (s, w) = failed_next_preparation_fixture(tmp.path());
+        inject_next_round_reservation(&s, &w, state);
+        assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]})).is_err(), "{state}");
+    }
+    for (round, detail) in [
+        (0, "Managed Git timed out; preserve checkout"),
+        (1, "Native admission uncertain"),
+        (2, "Managed Git timed out; preserve checkout"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (s, mut w) = failed_next_preparation_fixture(tmp.path());
+        w["round"] = json!(round);
+        s.save_workflow(&mut w, "blocked", detail).unwrap();
+        assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]})).is_err());
+    }
+}
+
+#[test]
+fn failed_next_preparation_rechecks_nonlaunch_before_seeding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = failed_next_preparation_fixture(tmp.path());
+    let next = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]}),
+    )
+    .unwrap();
+    inject_next_round_reservation(&s, &w, "succeeded");
+    let f = Fake {
+        directory: tmp.path().join("source").to_str().unwrap().into(),
+        ..Default::default()
+    };
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    assert_eq!(s.workflow(&text(&next, "id")).unwrap()["state"], "blocked");
+    assert!(
+        !s.tasks(None)
+            .unwrap()
+            .iter()
+            .any(|t| t["request"]["workflow_id"] == next["id"])
+    );
+}
+
+#[test]
+fn failed_next_preparation_checks_sibling_uncertainty_and_stops_at_admission_and_seed() {
+    for after_admission in [false, true] {
+        for unresolved_stop in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (s, w) = failed_next_preparation_fixture(tmp.path());
+            let sibling = plugin::call(&s, "ses_test", "foreman_reconcile", &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]})).unwrap();
+            let f = Fake {
+                directory: tmp.path().join("source").to_str().unwrap().into(),
+                ..Default::default()
+            };
+            workflows::tick(&s, &f, &mut runner()).unwrap();
+            let mut sibling = s.workflow(&text(&sibling, "id")).unwrap();
+            let task = text(&sibling["data"]["rounds"][0], "worker_id");
+            s.update(&task, "succeeded", "fixture finished", "")
+                .unwrap();
+            s.save_workflow(&mut sibling, "blocked", "preserved sibling fixture")
+                .unwrap();
+            let args = json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+            if after_admission {
+                plugin::call(&s, "ses_test", "foreman_reconcile", &args).unwrap();
+            }
+            if unresolved_stop {
+                s.exec(
+                    "INSERT INTO task_stops(task_id,state) VALUES (?,'uncertain')",
+                    [&task],
+                )
+                .unwrap();
+            } else {
+                s.exec("UPDATE tasks SET state='uncertain' WHERE id=?", [&task])
+                    .unwrap();
+            }
+            if after_admission {
+                workflows::tick(&s, &f, &mut runner()).unwrap();
+                assert_eq!(
+                    s.workflow(&text(&args, "workflow_id")).unwrap()["state"],
+                    "blocked",
+                    "unresolved stop: {unresolved_stop}"
+                );
+                assert!(
+                    !s.tasks(None)
+                        .unwrap()
+                        .iter()
+                        .any(|t| t["request"]["workflow_id"] == args["workflow_id"])
+                );
+            } else {
+                assert!(
+                    plugin::call(&s, "ses_test", "foreman_reconcile", &args).is_err(),
+                    "unresolved stop: {unresolved_stop}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -3026,6 +4045,45 @@ fn historical_completion_receipts_reconcile_without_replay() {
             json!({"id":p["id"],"type":"synthetic","text":p["text"],"metadata":p["metadata"]}),
         );
         assert!(r.accepted(e).unwrap());
+    }
+}
+
+#[test]
+fn extended_and_autonomy_completion_receipts_are_accepted_exactly_without_replay() {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
+    let e = &fixture["workflow_event"];
+    let mut p = fixture["workflow_payload"].clone();
+    p["text"] = json!(format!(
+        "{} Status retrieval: use this workflow_id or task_id; default status is a bounded summary. Read actual check results, both exact-candidate verdicts and unresolved findings/limitations. Follow marked truncations/missing rows with section pagination or mode=detail and JSON pointer, then next_offset chunks. Never claim success or acknowledge unseen evidence from a returned file path. If output is inaccessible, retry a narrower section/smaller limit; otherwise report the blocker without ack. Do not broaden directory permissions. Execution success is not review approval; ready is candidate qualification. Later integration receipts take precedence over historical candidate details; integration does not verify publication or runtime. Only acknowledge after consuming the relevant readable outcome.",
+        text(&p, "text")
+    ));
+    let mut autonomy = p.clone();
+    autonomy["text"] = json!(text(&p,"text").replace(
+        "Do not refresh the checklist, dispatch agents, replay work, approve permissions, integrate, merge or publish. Progress is displayed independently; this is the final result notification, not a progress update.",
+        "After reading and acknowledging the evidence, continue only an eligible bounded same-task continuation already covered by user authority and remaining budget; otherwise briefly report engineering decisions, verification, limitations and the specific blocker. Do not invent tasks, silently renew budgets, replay uncertain work, approve permissions, integrate, merge or publish. Progress is displayed independently; do not poll or maintain checklists merely for this notification."
+    ));
+    for p in [p, autonomy] {
+        let prefix = format!("/api/session/{}", text(e, "foreman"));
+        let mut r = Routes {
+            values: BTreeMap::new(),
+        };
+        r.values.insert(
+            format!("{prefix}/inbox"),
+            json!([{"id":p["id"],"type":"synthetic","sessionID":e["foreman"],"payload":p}]),
+        );
+        assert!(r.accepted(e).unwrap());
+        let inbox = r.values.get_mut(&format!("{prefix}/inbox")).unwrap();
+        inbox[0]["payload"]["text"] = json!(format!("{} ", text(&p, "text")));
+        assert!(r.accepted(e).is_err());
+        r.values.clear();
+        let message = format!("{prefix}/message/{}", text(&p, "id"));
+        r.values.insert(
+            message.clone(),
+            json!({"id":p["id"],"type":"synthetic","text":p["text"],"metadata":p["metadata"]}),
+        );
+        assert!(r.accepted(e).unwrap());
+        r.values.get_mut(&message).unwrap()["metadata"]["teem_workflow"] = json!("wrong");
+        assert!(r.accepted(e).is_err());
     }
 }
 #[test]
