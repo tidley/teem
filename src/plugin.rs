@@ -134,8 +134,13 @@ pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
             && array(&schema["required"])
                 .iter()
                 .all(|k| arguments.contains_key(k.as_str().unwrap_or(""))),
-        "Use exactly documented tool arguments"
+        "Tool call rejected before dispatch; no work started by this call. Use exactly documented tool arguments"
     );
+    if name == "foreman_handoff" {
+        return crate::handoff::claim(s, f, args);
+    }
+    let owner = crate::handoff::caller(s, f, name, args)?;
+    let f = owner.as_str();
     match name {
         "foreman_submit" => s.submit(f, dispatch_args(name, args)?),
         "foreman_status" => s.status(f, args),
@@ -146,6 +151,8 @@ pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
         "foreman_stop" => crate::control::request(s, f, args),
         "foreman_reconcile" => crate::reconcile::submit(s, f, args),
         "foreman_recover_qualification" => crate::recovery::submit(s, f, args),
+        "foreman_result_notice" => crate::notices::update(s, f, args),
+        "foreman_repair_prerequisites" => crate::prerequisites::repair(s, f, args),
         "foreman_ack" => {
             s.ack(f, args["event_id"].as_str().context("Invalid event ID")?)?;
             Ok(json!({"acknowledged":true}))

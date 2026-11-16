@@ -155,9 +155,15 @@ impl Store {
     }
     pub fn tasks(&self, foreman: Option<&str>) -> Result<Vec<Value>> {
         let rows = if let Some(f) = foreman {
+            let shared = self
+                .workflows(f)?
+                .into_iter()
+                .filter(|w| w["foreman"] != f)
+                .map(|w| w["id"].clone())
+                .collect::<Vec<_>>();
             self.query(
-                "SELECT * FROM tasks WHERE foreman=? ORDER BY created,id",
-                [f],
+                "SELECT * FROM tasks WHERE foreman=? OR json_extract(request,'$.workflow_id') IN (SELECT value FROM json_each(?)) ORDER BY created,id",
+                [f,canonical(&json!(shared)).as_str()],
             )?
         } else {
             self.query("SELECT * FROM tasks ORDER BY created,id", [])?
@@ -182,13 +188,12 @@ impl Store {
         Ok(v)
     }
     pub fn workflows(&self, f: &str) -> Result<Vec<Value>> {
-        self.query(
-            "SELECT id FROM workflows WHERE foreman=? ORDER BY created,id",
-            [f],
-        )?
-        .iter()
-        .map(|r| self.workflow(&text(r, "id")))
-        .collect()
+        let mut works = Vec::new();
+        for row in self.query("SELECT id FROM workflows WHERE foreman=? OR foreman IN (SELECT original_foreman FROM workflow_handoffs WHERE target_foreman=? OR source_foreman=?) ORDER BY created,id",[f,f,f])? {
+            let w=self.workflow(&text(&row,"id"))?;
+            if crate::handoff::can_read(self,f,&w)? { works.push(w); }
+        }
+        Ok(works)
     }
     pub fn allowed(&self, path: &str, foreman: &str) -> Result<bool> {
         if self.allowed.contains(path) {
@@ -265,7 +270,7 @@ impl Store {
                 role != "worker" || workflow["request"].get("qualification_recovery").is_none(),
                 "Qualification recovery cannot dispatch implementation or correction workers"
             );
-            if role == "worker" {
+            {
                 if let Some(paths) = workflow["policy"].get("reference_paths") {
                     ensure!(
                         req.get("reference_paths")
@@ -280,6 +285,19 @@ impl Store {
                     );
                 }
             }
+            let prerequisite_policy = crate::prerequisites::effective_policy(&workflow);
+            if let Some(files) = prerequisite_policy.get("review_prerequisites") {
+                ensure!(
+                    req.get("review_prerequisites").is_none_or(|v| v == files),
+                    "Managed task cannot switch approved prerequisites"
+                );
+                req["review_prerequisites"] = files.clone();
+            } else {
+                ensure!(
+                    req.get("review_prerequisites").is_none(),
+                    "No approved review prerequisites"
+                );
+            }
             if let Some(issue) = workflow["request"].get("issue") {
                 ensure!(
                     req.get("issue").is_none_or(|value| value == issue),
@@ -289,8 +307,12 @@ impl Store {
             }
         }
         ensure!(
-            req.get("reference_paths").is_none() || (managed && role == "worker"),
-            "Reference paths require an approved managed worker policy"
+            req.get("reference_paths").is_none() || managed,
+            "Reference paths require an approved managed policy"
+        );
+        ensure!(
+            req.get("review_prerequisites").is_none() || managed,
+            "Review prerequisites require a managed policy"
         );
         if req.get("native_todos").is_some() {
             ensure!(
@@ -394,7 +416,17 @@ impl Store {
         if FINAL.contains(&state) && w["data"]["finished_at"].is_null() {
             w["data"]["finished_at"] = json!(now());
         }
-        self.transaction(||{ensure!(!crate::control::paused(self,&text(w,"id"))?,"Workflow is paused by a user stop; preserve work without progression");self.exec("UPDATE workflows SET state=?,detail=?,round=?,base_revision=?,data=? WHERE id=?",params![state,detail,w["round"].as_i64().unwrap_or(0),w["base_revision"].as_str(),canonical(&w["data"]),text(w,"id")])?;if FINAL.contains(&state){self.exec("INSERT OR IGNORE INTO events(id,task_id,foreman,request_id,transport,refresh_todos,workflow_id) VALUES (?,?,?,?,'native',0,?)",params![uuid::Uuid::new_v4().to_string(),format!("workflow:{}",text(w,"id")),text(w,"foreman"),uuid::Uuid::new_v4().to_string(),text(w,"id")])?;}Ok(())})
+        let event_task = format!(
+            "workflow:{}{}",
+            text(w, "id"),
+            if w["data"]["prerequisite_policy_recovery"].is_object() {
+                ":prerequisite-repaired"
+            } else {
+                ""
+            }
+        );
+        let event_foreman = crate::handoff::manager(self, w)?;
+        self.transaction(||{ensure!(!crate::control::paused(self,&text(w,"id"))?,"Workflow is paused by a user stop; preserve work without progression");self.exec("UPDATE workflows SET state=?,detail=?,round=?,base_revision=?,data=? WHERE id=?",params![state,detail,w["round"].as_i64().unwrap_or(0),w["base_revision"].as_str(),canonical(&w["data"]),text(w,"id")])?;if FINAL.contains(&state){self.exec("INSERT OR IGNORE INTO events(id,task_id,foreman,request_id,transport,refresh_todos,workflow_id) VALUES (?,?,?,?,'native',0,?)",params![uuid::Uuid::new_v4().to_string(),event_task,event_foreman,uuid::Uuid::new_v4().to_string(),text(w,"id")])?;}Ok(())})
     }
     pub fn workflow_submit(&self, f: &str, args: Value) -> Result<Value> {
         workflows::submit(self, f, args)

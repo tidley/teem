@@ -39,7 +39,12 @@ are reported separately.
 The Foreman instructions separate outcome, authority, execution, evidence and
 reporting. Native chats can coordinate authorised work in another configured
 project without moving or rebinding the chat; each target retains its own policy.
-Approved checks and two independent exact-candidate reviews remain mandatory.
+Native candidate qualification requires approved checks and two independent
+exact-candidate reviews. An explicit human review waiver is recorded as waived,
+never as passed qualification. For separately authorised version/changelog-only
+commits, the Foreman can transfer and verify only that metadata diff and use
+ordinary scoped Git operations without changing a retained Teem candidate or its
+blocked history. A local-commit-only instruction prohibits pushing/publication.
 Integration, local commits, publication, deployment and destructive actions still
 need their respective explicit authority. A completion event grants none, but
 does not revoke approval already given for that scope. Uncertain work is preserved,
@@ -49,6 +54,51 @@ Fresh installations use these defaults. Upgrades preserve existing customised
 profiles; adopt updated instructions explicitly as described in
 [Foreman access and reinstall policy](docs/FOREMAN_ACCESS.md).
 See [the changelog](CHANGELOG.md) for source changes and qualification limits.
+
+The composer shows a single-line `Teem result · /teem-result` hint, with explicit
+attention or stale status when needed. Task titles remain inside the result view.
+`/teem-result` reads the latest retained outcome for the current chat. Its
+scrollable view includes worker-reported changes and limitations, named check
+results, both recorded review verdicts and findings, and local integration status.
+Worker prose is labelled as a claim, not independent verification. Publication
+and deployment remain **not checked**: a local integration commit proves neither.
+Missing evidence and shortened excerpts are explicit; `foreman_status` retains
+the full reports and logs. Opening the view makes no model call, acknowledges no
+event and starts no work. Older projections keep their original compact receipt
+until the updated native supervisor publishes richer evidence.
+
+## Review prerequisites and blocked-review recovery
+
+Project policies can declare `review_prerequisites` as up to eight explicit
+absolute file paths. Teem pins their canonical identities and SHA-256 digests,
+checks availability before launch, and supplies private read-only copies inside
+each worker/reviewer checkout. Declared `SKILL.md` guidance is also preloaded.
+No external-directory, shell or editing permissions are added. Declare every
+mandatory policy/guidance file; Teem does not guess requirements from prose.
+
+Reviewers report infrastructure/access failures with a structured `blocked`
+verdict and reason, not a fabricated code finding. This retains the candidate
+without consuming an automatic code-correction attempt or starting another worker.
+The default limit remains three automatic code-correction attempts, not a user
+money/token budget. Genuine source findings still follow the bounded correction flow.
+
+After an explicitly authorised prerequisite repair, use
+`foreman_recover_qualification` with `recovery_id`, `source_workflow_id` and
+`review_snapshot` (instead of `expected_snapshot`). This preserves the parent,
+requires verified passing check evidence and two completed valid prior verdicts,
+and runs fresh checks plus two new reviews against the unchanged retained snapshot.
+It launches no implementation worker, does not reset code-correction counters,
+and cannot renew an unchanged blocked attempt. A further explicit requalification
+requires a strict blocked verdict and a new prerequisite/reference-delivery repair.
+Historical source findings
+remain visible to both new reviewers; they are not reclassified from prose.
+Source/check policy drift, integration, pauses and uncertain work still block
+this path. Only declared prerequisite repairs can differ from the prior policy.
+
+`/teem-result` presents the recorded blocker and next action first, then separate
+Checks, Reviews, Delivery, Worker report and Evidence sections. Earlier worker
+claims appear after authoritative results. A review block is not automatically
+a firmware defect or a request for the user to diagnose it.
 
 ## Components
 

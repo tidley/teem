@@ -1,4 +1,4 @@
-# Project-local worker references (#12)
+# Project-local read-only references (#12)
 
 This is source configuration support, not installation, runtime activation, or
 qualification of a live OpenCode host. No existing session is changed.
@@ -24,12 +24,13 @@ Choose a narrow subtree; validation cannot determine whether arbitrary contents
 are appropriate for an assignment.
 
 The policy stores each canonical path and its file/directory type. Each new
-managed implementation task inherits only its own project's captured list, also
+managed implementation or reviewer task inherits only its own project's captured list, also
 on corrective rounds. Native permissions use an exact file resource or a directory
 resource ending in `/**`. A file never causes a parent-directory, sibling or
 `file/**` grant. Historical task/session permissions do not consult the filesystem
 again, so deleting a reference or changing its type does not silently change a
-native identity. Reviewer and legacy manual-task permissions are unchanged.
+native identity. Reviewers receive the same read-only reference-directory access,
+but no shell or edit grant. Legacy manual-task permissions are unchanged.
 
 The new rules grant only `external_directory` access alongside the existing
 read/glob/grep rules. Built-in edits remain restricted to the task's relative

@@ -225,7 +225,7 @@ fn workflow_summary(w: &Value, tasks: &[Value]) -> Value {
         let task = tasks.iter().find(|t| t["id"] == id);
         let v = verdicts.get(i).cloned().unwrap_or(Value::Null);
         let findings = array(&v["findings"]);
-        reviews.push(json!({"focus":focus,"task_id":id,"execution_state":task.map(|t| &t["state"]),"verdict":v["verdict"],"snapshot":v["snapshot"],"exact_candidate":!v.is_null() && v["snapshot"] == round["snapshot"]["sha256"],"findings_total":findings.len(),"findings":findings.iter().take(2).map(|f|fields(f,&["path","line","message"])).collect::<Vec<_>>(),"findings_truncated":findings.len()>2}));
+        reviews.push(json!({"focus":focus,"task_id":id,"execution_state":task.map(|t| &t["state"]),"verdict":v["verdict"],"reason":clip(&v,"reason",500),"snapshot":v["snapshot"],"exact_candidate":!v.is_null() && v["snapshot"] == round["snapshot"]["sha256"],"findings_total":findings.len(),"findings":findings.iter().take(2).map(|f|fields(f,&["path","line","message"])).collect::<Vec<_>>(),"findings_truncated":findings.len()>2}));
     }
     out["reviews"] = json!(reviews);
     out["review_results_total"] = json!(verdicts.len());
@@ -344,11 +344,11 @@ pub fn read(s: &Store, f: &str, args: &Value) -> Result<Value> {
         let wids = works.iter().map(|w| text(w, "id")).collect::<BTreeSet<_>>();
         let mut events = s.query(
             if mode == "detail" {
-                "SELECT * FROM events WHERE foreman=? ORDER BY rowid"
+                "SELECT * FROM events WHERE foreman=? OR workflow_id IN (SELECT value FROM json_each(?)) ORDER BY rowid"
             } else {
-                "SELECT * FROM events WHERE foreman=? AND acked=0 ORDER BY rowid"
+                "SELECT * FROM events WHERE (foreman=? OR workflow_id IN (SELECT value FROM json_each(?))) AND acked=0 ORDER BY rowid"
             },
-            [f],
+            [f,canonical(&if scoped {json!(wids)} else {json!([])}).as_str()],
         )?;
         events.retain(|e| {
             !scoped
@@ -399,6 +399,15 @@ pub fn read(s: &Store, f: &str, args: &Value) -> Result<Value> {
             .unwrap_or_default();
 
         if mode == "detail" {
+            for work in &mut works {
+                let history = s.query(
+                    "SELECT * FROM result_notices WHERE workflow_id=? ORDER BY seq DESC LIMIT 50",
+                    [text(work, "id")],
+                )?;
+                if !history.is_empty() {
+                    work["result_notice_history"] = json!(history);
+                }
+            }
             let raw = match section {
                 "overview" => {
                     if !task_id.is_empty() {
@@ -492,22 +501,7 @@ pub fn read(s: &Store, f: &str, args: &Value) -> Result<Value> {
 
         let scoped_counts = counts(&tasks, &works);
         let global_counts = counts(&all_tasks, &all_works);
-        let latest = works
-            .iter()
-            .filter(|w| FINAL.contains(&text(w, "state").as_str()))
-            .max_by(|a, b| {
-                a["data"]["finished_at"]
-                    .as_f64()
-                    .or(a["created"].as_f64())
-                    .unwrap_or(0.0)
-                    .total_cmp(
-                        &b["data"]["finished_at"]
-                            .as_f64()
-                            .or(b["created"].as_f64())
-                            .unwrap_or(0.0),
-                    )
-                    .then_with(|| text(a, "id").cmp(&text(b, "id")))
-            });
+        let (latest, result_notice) = crate::notices::select(s, &works)?;
         // Rich entries have independent bounds; if several exceed the response budget,
         // shorten pages, never remove a failure from a displayed candidate's verdicts.
         for page_limit in (1..=limit).rev() {
@@ -575,7 +569,12 @@ pub fn read(s: &Store, f: &str, args: &Value) -> Result<Value> {
                 let end = offset.saturating_add(rows.len()).min(raw.len());
                 out["pages"][name] = json!({"offset":offset,"returned":rows.len(),"total":raw.len(),"next_offset":if end<raw.len(){Some(end)}else{None},"order":if ["projects","progress","progress_delivery"].contains(&name){"stored order"}else{"newest first"}});
                 out[name] = if name == "progress" {
-                    json!({"items":rows,"latest_result":latest.map(|w|fields(&json!({"workflow_id":w["id"],"title":progress::title(w),"state":w["state"],"content":w["detail"]}),&["workflow_id","title","state","content"]))})
+                    let latest_result = latest.map(|w| {
+                        let mut value = fields(&json!({"workflow_id":w["id"],"title":progress::title(w),"state":w["state"],"content":w["detail"]}),&["workflow_id","title","state","content"]);
+                        value["details"] = json!(progress::result_details(s, w));
+                        value
+                    });
+                    json!({"items":rows,"latest_result":latest_result,"result_notice_cleared":result_notice.is_some(),"result_notice":result_notice})
                 } else {
                     json!(rows)
                 };

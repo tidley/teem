@@ -505,6 +505,24 @@ fn operator_integration_applies_exact_candidate_and_updates_shared_status_withou
     assert_eq!(s.query("SELECT * FROM workflows", []).unwrap(), before);
     assert_eq!(s.query("SELECT * FROM events", []).unwrap(), events);
     assert_eq!(s.workflow(&text(&w, "id")).unwrap()["integration"], receipt);
+    let outcome = progress::snapshot(&s, "ses_test").unwrap()["latest_result"].clone();
+    let details = text(&outcome, "details");
+    assert!(details.contains("Applied locally"));
+    assert!(details.contains("Checks"));
+    assert!(details.contains("Reviews"));
+    assert!(details.contains("Publication: not checked"));
+    assert!(details.contains("Deployment: not checked"));
+    let status = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_status",
+        &json!({"section":"progress"}),
+    )
+    .unwrap();
+    assert_eq!(
+        status["progress"]["latest_result"]["details"],
+        outcome["details"]
+    );
     assert!(
         text(
             &progress::snapshot(&s, "ses_test").unwrap()["latest_result"],
@@ -4242,6 +4260,327 @@ fn pass_reviews(s: &Store, id: &str) {
         }
     }
 }
+
+fn block_one_review(s: &Store, id: &str) {
+    let w = s.workflow(id).unwrap();
+    for (index, task) in array(&w["data"]["rounds"][0]["review_ids"])
+        .iter()
+        .enumerate()
+    {
+        let result = if index == 0 {
+            json!({"snapshot":w["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"blocked","findings":[],"reason":"Mandatory policy copy unavailable"})
+        } else {
+            json!({"snapshot":w["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"pass","findings":[]})
+        };
+        s.update(task.as_str().unwrap(), "succeeded", &result.to_string(), "")
+            .unwrap();
+    }
+}
+
+#[test]
+fn blocked_review_retains_candidate_without_consuming_a_code_correction() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, id, mut run) = reviewing_fixture(tmp.path());
+    block_one_review(&s, &id);
+    let snapshot = s.workflow(&id).unwrap()["data"]["rounds"][0]["snapshot"].clone();
+    workflows::tick(&s, &f, &mut run).unwrap();
+    let w = s.workflow(&id).unwrap();
+    assert_eq!(w["state"], "blocked");
+    assert_eq!(w["round"], 0);
+    assert_eq!(w["data"]["review_blocked"]["snapshot"], snapshot["sha256"]);
+    assert!(text(&w, "detail").contains("Mandatory policy copy unavailable"));
+    assert!(text(&w, "detail").contains("No code-correction attempt consumed"));
+    let outcome = progress::snapshot(&s, "ses_test").unwrap()["latest_result"].clone();
+    assert_eq!(outcome["sections"][0]["title"], "Review blocked");
+    assert!(text(&outcome["sections"][0], "body").contains("Mandatory policy copy unavailable"));
+    assert_eq!(outcome["sections"][1]["title"], "Checks");
+    assert_eq!(outcome["sections"][2]["title"], "Reviews");
+    let before = s.tasks(None).unwrap();
+    workflows::tick(&s, &f, &mut run).unwrap();
+    assert_eq!(s.tasks(None).unwrap(), before);
+    assert_eq!(before.iter().filter(|t| t["role"] == "worker").count(), 1);
+}
+
+#[test]
+fn review_prerequisite_recovery_qualifies_the_same_candidate_without_any_worker() {
+    for historical in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut s, f, id, mut run) = reviewing_fixture(tmp.path());
+        block_one_review(&s, &id);
+        workflows::tick(&s, &f, &mut run).unwrap();
+        if historical {
+            let mut old = s.workflow(&id).unwrap();
+            let finding = json!({"snapshot":old["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"changes_requested","findings":[{"path":"AGENTS.md","line":62,"message":"Mandatory policy read denied; no source defect established"}]});
+            let task = old["data"]["rounds"][0]["review_ids"][0]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            s.exec(
+                "UPDATE tasks SET result=? WHERE id=?",
+                rusqlite::params![finding.to_string(), task],
+            )
+            .unwrap();
+            old["data"]["rounds"][0]["review_results"][0] = finding;
+            old["data"]
+                .as_object_mut()
+                .unwrap()
+                .remove("review_blocked");
+            s.save_workflow(
+                &mut old,
+                "needs_attention",
+                "Revision budget exhausted; preserve candidate and evidence for manual review",
+            )
+            .unwrap();
+        }
+        let parent = s.workflow(&id).unwrap();
+        let snapshot = parent["data"]["rounds"][0]["snapshot"].clone();
+        let guide = tmp.path().join("POLICY.md");
+        fs::write(&guide, "Mandatory approved policy").unwrap();
+        s.projects["project"]["review_prerequisites"] =
+            teem::prerequisites::normalise(&json!([guide]), &tmp.path().join("source")).unwrap();
+        let args = json!({"recovery_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":id,"review_snapshot":snapshot["sha256"]});
+        let recovery =
+            plugin::call(&s, "ses_test", "foreman_recover_qualification", &args).unwrap();
+        assert_eq!(recovery["state"], "qualification_queued");
+        assert_eq!(
+            plugin::call(&s, "ses_test", "foreman_recover_qualification", &args).unwrap(),
+            recovery
+        );
+        let mut duplicate = args.clone();
+        duplicate["recovery_id"] = json!(uuid::Uuid::new_v4().to_string());
+        assert!(plugin::call(&s, "ses_test", "foreman_recover_qualification", &duplicate).is_err());
+        workflows::tick(&s, &f, &mut run).unwrap();
+        let checking = s.workflow(&text(&recovery, "id")).unwrap();
+        assert_eq!(checking["state"], "checking", "{checking}");
+        assert_eq!(
+            checking["data"]["rounds"][0]["snapshot"]["sha256"],
+            snapshot["sha256"]
+        );
+        await_receipt(&checking["data"]["rounds"][0]["check_handle"]);
+        workflows::tick(&s, &f, &mut run).unwrap();
+        let reviewing = s.workflow(&text(&recovery, "id")).unwrap();
+        assert_eq!(reviewing["state"], "reviewing", "{reviewing}");
+        for task in array(&reviewing["data"]["rounds"][0]["review_ids"]) {
+            let t = s.task(task.as_str().unwrap()).unwrap();
+            assert_eq!(
+                t["request"]["review_prerequisites"],
+                s.projects["project"]["review_prerequisites"]
+            );
+            assert!(
+                Path::new(&text(&t, "checkout"))
+                    .join(".git/teem-prerequisites/0-POLICY.md")
+                    .is_file()
+            );
+        }
+        pass_reviews(&s, &text(&recovery, "id"));
+        workflows::tick(&s, &f, &mut run).unwrap();
+        assert_eq!(
+            s.workflow(&text(&recovery, "id")).unwrap()["state"],
+            "ready"
+        );
+        assert_eq!(s.workflow(&id).unwrap(), parent);
+        assert_eq!(
+            s.tasks(None)
+                .unwrap()
+                .iter()
+                .filter(|t| t["role"] == "worker")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn mixed_review_results_explain_the_blocker_before_source_findings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = store(tmp.path(), &[], json!({}));
+    let w = json!({"id":"workflow","state":"blocked","detail":"Review blocked","data":{"rounds":[{"snapshot":{"sha256":"candidate"},"review_results":[{"snapshot":"candidate","verdict":"changes_requested","findings":[{"path":"src/a","line":1,"message":"A demonstrated source finding"}]},{"snapshot":"candidate","verdict":"blocked","findings":[],"reason":"Required policy access denied"}]}]}});
+    let sections = progress::result_sections(&s, &w);
+    assert_eq!(sections[0]["title"], "Review blocked");
+    assert!(text(&sections[0], "body").starts_with("Required policy access denied"));
+    assert!(text(&sections[2], "body").contains("A demonstrated source finding"));
+}
+
+#[test]
+fn maximum_guidance_and_review_feedback_do_not_exhaust_the_task_prompt_limit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, f, mut w) = workflow_fixture(tmp.path(), false);
+    let skill = tmp.path().join("linus-review/SKILL.md");
+    fs::create_dir(skill.parent().unwrap()).unwrap();
+    fs::write(&skill, "G".repeat(12000)).unwrap();
+    s.projects["project"]["review_prerequisites"] =
+        teem::prerequisites::normalise(&json!([skill]), &tmp.path().join("source")).unwrap();
+    w["policy"] = s.projects["project"].clone();
+    w["request"]["prompt"] = json!("A".repeat(8000));
+    w["request"]["workers"] = json!([{"scope":["src/a"],"prompt":"B".repeat(8000)},{"scope":["src/b"],"prompt":"C".repeat(8000)}]);
+    s.exec(
+        "UPDATE workflows SET request=?,policy=? WHERE id=?",
+        rusqlite::params![
+            w["request"].to_string(),
+            w["policy"].to_string(),
+            text(&w, "id")
+        ],
+    )
+    .unwrap();
+    let id = text(&w, "id");
+    let mut run = runner();
+    workflows::tick(&s, &f, &mut run).unwrap();
+    for task in s.tasks(None).unwrap() {
+        assert!(text(&task["request"], "prompt").contains(".git/teem-task-instructions.md"));
+        let full = fs::read_to_string(
+            Path::new(&text(&task, "checkout")).join(".git/teem-task-instructions.md"),
+        )
+        .unwrap();
+        assert!(full.contains(&"A".repeat(8000)));
+        assert!(full.contains(&"G".repeat(12000)));
+    }
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut run).unwrap();
+    await_receipt(&s.workflow(&id).unwrap()["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut run).unwrap();
+    let review = s.workflow(&id).unwrap();
+    for task in array(&review["data"]["rounds"][0]["review_ids"]) {
+        s.update(task.as_str().unwrap(),"succeeded",&json!({"snapshot":review["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"changes_requested","findings":(0..20).map(|_|json!({"path":"src/a","line":1,"message":"F".repeat(500)})).collect::<Vec<_>>()}).to_string(),"").unwrap();
+    }
+    workflows::tick(&s, &f, &mut run).unwrap();
+    let correction = s.workflow(&id).unwrap();
+    assert_eq!(correction["state"], "working", "{correction}");
+    let task = s
+        .task(
+            correction["data"]["rounds"][1]["worker_id"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+    assert!(text(&task["request"], "prompt").len() <= 30000);
+    let checkout = PathBuf::from(text(&task, "checkout"));
+    let feedback = fs::read_to_string(checkout.join(".git/teem-correction-evidence.json")).unwrap();
+    assert!(feedback.len() > 12000);
+    assert_eq!(feedback.matches(&"F".repeat(500)).count(), 40);
+}
+
+#[test]
+fn review_recovery_rejects_uncertainty_changed_authority_and_changed_snapshots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, f, id, mut run) = reviewing_fixture(tmp.path());
+    block_one_review(&s, &id);
+    workflows::tick(&s, &f, &mut run).unwrap();
+    let parent = s.workflow(&id).unwrap();
+    let args = json!({"recovery_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":id,"review_snapshot":parent["data"]["rounds"][0]["snapshot"]["sha256"]});
+    let before = s.tasks(None).unwrap();
+    let mut wrong = args.clone();
+    wrong["review_snapshot"] = json!("0".repeat(64));
+    assert!(plugin::call(&s, "ses_test", "foreman_recover_qualification", &wrong).is_err());
+    wrong = args.clone();
+    wrong["expected_snapshot"] = args["review_snapshot"].clone();
+    assert!(plugin::call(&s, "ses_test", "foreman_recover_qualification", &wrong).is_err());
+    s.bind("ses_other", "other-terminal").unwrap();
+    assert!(plugin::call(&s, "ses_other", "foreman_recover_qualification", &args).is_err());
+    let policy = s.projects.clone();
+    s.projects["project"]["checks"][0]["timeout"] = json!(1);
+    assert!(plugin::call(&s, "ses_test", "foreman_recover_qualification", &args).is_err());
+    s.projects = policy;
+    let review_id = text(
+        before.iter().find(|t| t["role"] == "reviewer").unwrap(),
+        "id",
+    );
+    s.exec(
+        "UPDATE tasks SET state='uncertain' WHERE id=?",
+        [&review_id],
+    )
+    .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_recover_qualification", &args).is_err());
+    s.exec(
+        "UPDATE tasks SET state='succeeded' WHERE id=?",
+        [&review_id],
+    )
+    .unwrap();
+    fs::write(tmp.path().join("source/src/a"), "unfinished source edit").unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_recover_qualification", &args).is_err());
+    assert_eq!(s.tasks(None).unwrap(), before);
+    assert_eq!(s.workflow(&id).unwrap(), parent);
+}
+
+#[test]
+fn review_recovery_revalidates_parent_and_never_retries_another_blocked_review() {
+    for tamper in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (s, f, id, mut run) = reviewing_fixture(tmp.path());
+        block_one_review(&s, &id);
+        workflows::tick(&s, &f, &mut run).unwrap();
+        let parent = s.workflow(&id).unwrap();
+        let args = json!({"recovery_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":id,"review_snapshot":parent["data"]["rounds"][0]["snapshot"]["sha256"]});
+        let recovery =
+            plugin::call(&s, "ses_test", "foreman_recover_qualification", &args).unwrap();
+        let rid = text(&recovery, "id");
+        if tamper {
+            let worker = text(&parent["data"]["rounds"][0], "worker_id");
+            s.exec("UPDATE tasks SET result='tampered' WHERE id=?", [&worker])
+                .unwrap();
+            workflows::tick(&s, &f, &mut run).unwrap();
+            assert_eq!(s.workflow(&rid).unwrap()["state"], "blocked");
+            assert_eq!(s.tasks(None).unwrap().len(), 3);
+        } else {
+            workflows::tick(&s, &f, &mut run).unwrap();
+            await_receipt(&s.workflow(&rid).unwrap()["data"]["rounds"][0]["check_handle"]);
+            workflows::tick(&s, &f, &mut run).unwrap();
+            block_one_review(&s, &rid);
+            workflows::tick(&s, &f, &mut run).unwrap();
+            assert_eq!(s.workflow(&rid).unwrap()["state"], "blocked");
+            let next = json!({"recovery_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":rid,"review_snapshot":args["review_snapshot"]});
+            assert!(plugin::call(&s, "ses_test", "foreman_recover_qualification", &next).is_err());
+            assert_eq!(s.workflow(&id).unwrap(), parent);
+        }
+        assert_eq!(
+            s.tasks(None)
+                .unwrap()
+                .iter()
+                .filter(|t| t["role"] == "worker")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn explicit_requalification_after_a_new_delivery_repair_preserves_all_prior_candidates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, f, id, mut run) = reviewing_fixture(tmp.path());
+    block_one_review(&s, &id);
+    workflows::tick(&s, &f, &mut run).unwrap();
+    let parent = s.workflow(&id).unwrap();
+    let args = json!({"recovery_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":id,"review_snapshot":parent["data"]["rounds"][0]["snapshot"]["sha256"]});
+    let recovery = plugin::call(&s, "ses_test", "foreman_recover_qualification", &args).unwrap();
+    let rid = text(&recovery, "id");
+    workflows::tick(&s, &f, &mut run).unwrap();
+    await_receipt(&s.workflow(&rid).unwrap()["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut run).unwrap();
+    block_one_review(&s, &rid);
+    workflows::tick(&s, &f, &mut run).unwrap();
+    let old = s.workflow(&rid).unwrap();
+    let file = tmp.path().join("fixed-policy.md");
+    fs::write(&file, "New approved prerequisite delivery").unwrap();
+    s.projects["project"]["review_prerequisites"] =
+        teem::prerequisites::normalise(&json!([file]), &tmp.path().join("source")).unwrap();
+    let args = json!({"recovery_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":rid,"review_snapshot":args["review_snapshot"]});
+    let next = plugin::call(&s, "ses_test", "foreman_recover_qualification", &args).unwrap();
+    workflows::tick(&s, &f, &mut run).unwrap();
+    await_receipt(&s.workflow(&text(&next, "id")).unwrap()["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut run).unwrap();
+    pass_reviews(&s, &text(&next, "id"));
+    workflows::tick(&s, &f, &mut run).unwrap();
+    assert_eq!(s.workflow(&text(&next, "id")).unwrap()["state"], "ready");
+    assert_eq!(s.workflow(&id).unwrap(), parent);
+    assert_eq!(s.workflow(&rid).unwrap(), old);
+    assert_eq!(
+        s.tasks(None)
+            .unwrap()
+            .iter()
+            .filter(|t| t["role"] == "worker")
+            .count(),
+        1
+    );
+}
 #[test]
 fn two_worker_assignments_must_be_disjoint_and_within_task_scope() {
     let tmp = tempfile::tempdir().unwrap();
@@ -4523,6 +4862,530 @@ fn latest_result_is_selected_by_finish_time_without_backfilled_notifications() {
     assert_eq!(p["latest_result"]["workflow_id"], w["id"]);
     assert_eq!(p["todos"], json!([]));
     assert!(s.query("SELECT * FROM events", []).unwrap().is_empty());
+}
+
+#[test]
+fn stopped_result_names_the_project_source_and_next_action_without_claiming_current_git_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, mut w) = workflow_fixture(tmp.path(), false);
+    s.save_workflow(
+        &mut w,
+        "blocked",
+        "Source has unfinished changes; none discarded",
+    )
+    .unwrap();
+    let result = progress::snapshot(&s, "ses_test").unwrap()["latest_result"].clone();
+    assert_eq!(result["blocker"]["kind"], "source_changes");
+    assert_eq!(result["blocker"]["project"], "project");
+    assert_eq!(result["blocker"]["source"], w["policy"]["path"]);
+    assert!(text(&result["blocker"], "action").contains("preserve"));
+    assert!(text(&result["blocker"], "action").contains("archive"));
+    assert_eq!(result["historical"], true);
+    assert!(result["recorded_at"].is_number());
+}
+
+#[test]
+fn archive_and_restore_notice_preserve_execution_history_and_do_not_resurrect_older_results() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, mut w) = workflow_fixture(tmp.path(), false);
+    s.save_workflow(
+        &mut w,
+        "blocked",
+        "Source has unfinished changes; none discarded",
+    )
+    .unwrap();
+    let before = s.workflow(&text(&w, "id")).unwrap();
+    let events = s.query("SELECT * FROM events", []).unwrap();
+    let args = json!({"workflow_id":w["id"],"action":"archive","reason":"Superseded by separately verified manual delivery; retained attempt is history"});
+    let notice = plugin::call(&s, "ses_test", "foreman_result_notice", &args).unwrap();
+    assert_eq!(notice["action"], "archive");
+    assert_eq!(
+        plugin::call(&s, "ses_test", "foreman_result_notice", &args).unwrap(),
+        notice
+    );
+    let p = progress::snapshot(&s, "ses_test").unwrap();
+    assert_eq!(p["result_notice_cleared"], true);
+    assert!(p["latest_result"].is_null());
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap(), before);
+    assert_eq!(s.query("SELECT * FROM events", []).unwrap(), events);
+    s.bind("ses_foreign", "foreign").unwrap();
+    assert!(plugin::call(&s, "ses_foreign", "foreman_result_notice", &args).is_err());
+    let restore =
+        json!({"workflow_id":w["id"],"action":"restore","reason":"Show retained evidence again"});
+    plugin::call(&s, "ses_test", "foreman_result_notice", &restore).unwrap();
+    assert_eq!(
+        progress::snapshot(&s, "ses_test").unwrap()["latest_result"]["workflow_id"],
+        w["id"]
+    );
+}
+
+#[test]
+fn active_same_task_successor_clears_the_old_blocker_without_clearing_the_workflow() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    let successor = plugin::call(
+        &s,
+        "ses_test",
+        "foreman_reconcile",
+        &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]}),
+    )
+    .unwrap();
+    let p = progress::snapshot(&s, "ses_test").unwrap();
+    assert!(p["latest_result"].is_null());
+    assert_eq!(p["result_notice_cleared"], true);
+    assert_eq!(p["result_notice"]["successor_workflow_id"], successor["id"]);
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap(), w);
+    let args = json!({"workflow_id":successor["id"],"action":"archive","reason":"Must not hide active work"});
+    assert!(plugin::call(&s, "ses_test", "foreman_result_notice", &args).is_err());
+}
+
+#[test]
+fn notice_archive_rejects_uncertain_agents_and_check_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    let mut w = s.workflow(&text(&w, "id")).unwrap();
+    let args = json!({"workflow_id":w["id"],"action":"archive","reason":"Manual delivery supersedes this attempt"});
+    s.save_workflow(&mut w, "blocked", "Stopped").unwrap();
+    // A terminal controller alone is insufficient to hide unresolved execution.
+    let id = text(&s.tasks(None).unwrap()[0], "id");
+    s.exec(
+        "UPDATE tasks SET state='uncertain',request=json_set(request,'$.workflow_id',?) WHERE id=?",
+        rusqlite::params![text(&w, "id"), id],
+    )
+    .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_result_notice", &args).is_err());
+    s.exec("UPDATE tasks SET state='failed' WHERE id=?", [id])
+        .unwrap();
+    w["data"]["rounds"] =
+        json!([{"check_checkout":"retained checkout without positive non-launch proof"}]);
+    // Update fixture evidence without progressing a terminal workflow.
+    s.exec(
+        "UPDATE workflows SET data=? WHERE id=?",
+        rusqlite::params![canonical(&w["data"]), text(&w, "id")],
+    )
+    .unwrap();
+    assert!(plugin::call(&s, "ses_test", "foreman_result_notice", &args).is_err());
+    assert!(
+        teem::notices::record(&s, &text(&w, "id"))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn invalid_workflow_submissions_report_admission_not_execution_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, _, w) = workflow_fixture(tmp.path(), false);
+    let mut args = w["request"].clone();
+    args["workflow_id"] = json!(uuid::Uuid::new_v4().to_string());
+    args["unexpected_argument"] = json!(true);
+    let error = plugin::call(&s, "ses_test", "foreman_workflow", &args)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("rejected before dispatch"));
+    args.as_object_mut().unwrap().remove("unexpected_argument");
+    args["scope"] = json!("Describe the task rather than paths");
+    let error = format!(
+        "{:#}",
+        plugin::call(&s, "ses_test", "foreman_workflow", &args).unwrap_err()
+    );
+    assert!(error.contains("rejected before admission"));
+    assert!(error.contains("relative file/directory paths"));
+    assert_eq!(s.workflows("ses_test").unwrap().len(), 1);
+    assert!(s.tasks(None).unwrap().is_empty());
+}
+
+#[test]
+fn adding_prerequisites_during_work_does_not_revoke_execution_or_replay_a_worker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, f, w) = workflow_fixture(tmp.path(), false);
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let before = s.tasks(None).unwrap();
+    let file = tmp.path().join("policy.md");
+    fs::write(&file, "Mandatory read-only guidance").unwrap();
+    let policy = workflows::normalise_projects(&json!({"project":{"path":w["policy"]["path"],"checks":w["policy"]["checks"],"max_revisions":1,"review_prerequisites":[file]}})).unwrap();
+    s.projects = policy;
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let current = s.workflow(&text(&w, "id")).unwrap();
+    assert_eq!(current["state"], "working");
+    assert_eq!(s.tasks(None).unwrap(), before);
+    assert_eq!(current["policy"], w["policy"]);
+    finish_workers(&s);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let current = s.workflow(&text(&w, "id")).unwrap();
+    await_receipt(&current["data"]["rounds"][0]["check_handle"]);
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let reviewers = s
+        .tasks(None)
+        .unwrap()
+        .into_iter()
+        .filter(|t| t["role"] == "reviewer")
+        .collect::<Vec<_>>();
+    assert_eq!(reviewers.len(), 2);
+    for t in reviewers {
+        assert_eq!(
+            t["request"]["review_prerequisites"],
+            s.projects["project"]["review_prerequisites"]
+        );
+        teem::prerequisites::validate_task(&t).unwrap();
+        assert!(text(&t["request"], "prompt").contains("Mandatory approved prerequisites"));
+    }
+}
+
+#[test]
+fn explicit_prerequisite_repair_resumes_only_existing_work_and_preserves_old_event() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, f, w) = workflow_fixture(tmp.path(), false);
+    let mut runner = runner();
+    workflows::tick(&s, &f, &mut runner).unwrap();
+    let mut blocked = s.workflow(&text(&w, "id")).unwrap();
+    s.save_workflow(
+        &mut blocked,
+        "blocked",
+        "Project policy removed or changed; progression stopped",
+    )
+    .unwrap();
+    let events = s.query("SELECT * FROM events", []).unwrap();
+    let tasks = s.tasks(None).unwrap();
+    let file = tmp.path().join("policy.md");
+    fs::write(&file, "Approved policy").unwrap();
+    s.projects=workflows::normalise_projects(&json!({"project":{"path":w["policy"]["path"],"checks":w["policy"]["checks"],"max_revisions":1,"review_prerequisites":[file]}})).unwrap();
+    let args = json!({"workflow_id":w["id"]});
+    let repaired = plugin::call(&s, "ses_test", "foreman_repair_prerequisites", &args).unwrap();
+    assert_eq!(repaired["state"], "working");
+    assert_eq!(repaired["policy"], w["policy"]);
+    assert_eq!(repaired["request"], w["request"]);
+    assert_eq!(s.tasks(None).unwrap(), tasks);
+    assert_eq!(s.query("SELECT * FROM events", []).unwrap(), events);
+    let again = plugin::call(&s, "ses_test", "foreman_repair_prerequisites", &args).unwrap();
+    assert_eq!(again, repaired);
+    let mut final_w = repaired;
+    s.save_workflow(&mut final_w, "ready", "Fresh checks and reviews complete")
+        .unwrap();
+    let after = s.query("SELECT * FROM events ORDER BY rowid", []).unwrap();
+    assert_eq!(after.len(), events.len() + 1);
+    assert_eq!(after[0], events[0]);
+}
+
+#[test]
+fn prerequisite_repair_rejects_authority_drift_uncertainty_and_foreign_ownership() {
+    for fault in ["checks", "uncertain", "snapshot", "foreign"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut s, f, w) = workflow_fixture(tmp.path(), false);
+        workflows::tick(&s, &f, &mut runner()).unwrap();
+        let mut w = s.workflow(&text(&w, "id")).unwrap();
+        s.save_workflow(
+            &mut w,
+            "blocked",
+            "Project policy removed or changed; progression stopped",
+        )
+        .unwrap();
+        let file = tmp.path().join("policy.md");
+        fs::write(&file, "Approved policy").unwrap();
+        s.projects=workflows::normalise_projects(&json!({"project":{"path":w["policy"]["path"],"checks":w["policy"]["checks"],"max_revisions":1,"review_prerequisites":[file]}})).unwrap();
+        if fault == "checks" {
+            s.projects["project"]["checks"][0]["argv"] = json!(["git", "version"]);
+        }
+        if fault == "uncertain" {
+            s.update(
+                &text(&s.tasks(None).unwrap()[0], "id"),
+                "uncertain",
+                "",
+                "unknown",
+            )
+            .unwrap();
+        }
+        if fault == "snapshot" {
+            fs::create_dir_all(
+                s.directory
+                    .join("managed")
+                    .join(text(&w, "id"))
+                    .join("round-0/snapshot"),
+            )
+            .unwrap();
+        }
+        s.bind("ses_foreign", "foreign").unwrap();
+        let before = s.workflow(&text(&w, "id")).unwrap();
+        let args = json!({"workflow_id":w["id"]});
+        assert!(
+            plugin::call(
+                &s,
+                if fault == "foreign" {
+                    "ses_foreign"
+                } else {
+                    "ses_test"
+                },
+                "foreman_repair_prerequisites",
+                &args
+            )
+            .is_err(),
+            "{fault}"
+        );
+        assert_eq!(s.workflow(&text(&w, "id")).unwrap(), before);
+    }
+}
+
+#[test]
+fn scoped_handoff_allows_selected_evidence_and_continuation_without_rewriting_owners() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    s.bind("ses_target", "target").unwrap();
+    let status = json!({"workflow_id":w["id"],"mode":"detail","pointer":"/id"});
+    assert!(plugin::call(&s, "ses_target", "foreman_status", &status).is_err());
+    let before = s.workflow(&text(&w, "id")).unwrap();
+    let mut unrelated = w["request"].clone();
+    unrelated["workflow_id"] = json!(uuid::Uuid::new_v4().to_string());
+    unrelated["issue"] = json!("tidley/teem#9");
+    let unrelated = s.workflow_submit("ses_test", unrelated).unwrap();
+    let args = json!({"workflow_id":w["id"],"source_foreman":"ses_test","reason":"Tom approved this exact workflow handoff"});
+    let handoff = plugin::call(&s, "ses_target", "foreman_handoff", &args).unwrap();
+    assert_eq!(handoff["target_foreman"], "ses_target");
+    assert_eq!(
+        plugin::call(&s, "ses_target", "foreman_handoff", &args).unwrap(),
+        handoff
+    );
+    plugin::call(&s, "ses_target", "foreman_status", &status).unwrap();
+    plugin::call(&s, "ses_test", "foreman_status", &status).unwrap();
+    assert!(
+        plugin::call(
+            &s,
+            "ses_target",
+            "foreman_status",
+            &json!({"workflow_id":unrelated["id"]})
+        )
+        .is_err()
+    );
+    assert_eq!(s.workflow(&text(&w, "id")).unwrap(), before);
+    let reconcile =
+        json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_reconcile", &reconcile).is_err());
+    let successor = plugin::call(&s, "ses_target", "foreman_reconcile", &reconcile).unwrap();
+    assert_eq!(successor["foreman"], "ses_test");
+    let status = json!({"workflow_id":successor["id"],"mode":"detail","pointer":"/id"});
+    plugin::call(&s, "ses_target", "foreman_status", &status).unwrap();
+    assert!(
+        s.workflows("ses_target")
+            .unwrap()
+            .iter()
+            .any(|v| v["id"] == successor["id"])
+    );
+    s.bind("ses_unrelated", "unrelated").unwrap();
+    assert!(plugin::call(&s, "ses_unrelated", "foreman_status", &status).is_err());
+    let mut final_w = successor;
+    s.save_workflow(&mut final_w, "blocked", "fixture final result")
+        .unwrap();
+    let event = s
+        .query(
+            "SELECT id,foreman FROM events WHERE workflow_id=?",
+            [text(&final_w, "id")],
+        )
+        .unwrap();
+    assert_eq!(event[0]["foreman"], "ses_target");
+    let ack = json!({"event_id":event[0]["id"]});
+    assert!(plugin::call(&s, "ses_test", "foreman_ack", &ack).is_err());
+    plugin::call(&s, "ses_target", "foreman_ack", &ack).unwrap();
+}
+
+#[test]
+fn successive_handoffs_preserve_prior_readers_but_only_current_manager_can_ack() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    s.bind("ses_b", "b").unwrap();
+    s.bind("ses_c", "c").unwrap();
+    let args = json!({"workflow_id":w["id"],"source_foreman":"ses_test","reason":"Approved first handoff"});
+    plugin::call(&s, "ses_b", "foreman_handoff", &args).unwrap();
+    let event = s
+        .query(
+            "SELECT id FROM events WHERE workflow_id=?",
+            [text(&w, "id")],
+        )
+        .unwrap();
+    assert!(
+        plugin::call(
+            &s,
+            "ses_test",
+            "foreman_ack",
+            &json!({"event_id":event[0]["id"]})
+        )
+        .is_err()
+    );
+    plugin::call(
+        &s,
+        "ses_c",
+        "foreman_handoff",
+        &json!({"workflow_id":w["id"],"source_foreman":"ses_b","reason":"Approved second handoff"}),
+    )
+    .unwrap();
+    for f in ["ses_test", "ses_b", "ses_c"] {
+        plugin::call(&s, f, "foreman_status", &json!({"workflow_id":w["id"]})).unwrap();
+        assert!(s.workflows(f).unwrap().iter().any(|v| v["id"] == w["id"]));
+    }
+    assert!(
+        plugin::call(
+            &s,
+            "ses_b",
+            "foreman_ack",
+            &json!({"event_id":event[0]["id"]})
+        )
+        .is_err()
+    );
+    plugin::call(
+        &s,
+        "ses_c",
+        "foreman_ack",
+        &json!({"event_id":event[0]["id"]}),
+    )
+    .unwrap();
+}
+
+#[test]
+fn confirmed_stop_notification_follows_the_scoped_handoff() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, f, w) = workflow_fixture(tmp.path(), false);
+    workflows::tick(&s, &f, &mut runner()).unwrap();
+    s.bind("ses_target", "target").unwrap();
+    plugin::call(
+        &s,
+        "ses_target",
+        "foreman_handoff",
+        &json!({"workflow_id":w["id"],"source_foreman":"ses_test","reason":"Approved handoff"}),
+    )
+    .unwrap();
+    plugin::call(
+        &s,
+        "ses_target",
+        "foreman_stop",
+        &json!({"workflow_id":w["id"]}),
+    )
+    .unwrap();
+    teem::control::tick(&s, &f).unwrap();
+    let events = s
+        .query(
+            "SELECT foreman FROM events WHERE workflow_id=?",
+            [text(&w, "id")],
+        )
+        .unwrap();
+    assert_eq!(events[0]["foreman"], "ses_target");
+}
+
+#[test]
+fn adding_prerequisites_during_qualification_checks_preserves_progression() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, f, id, mut run) = reviewing_fixture(tmp.path());
+    block_one_review(&s, &id);
+    workflows::tick(&s, &f, &mut run).unwrap();
+    let parent = s.workflow(&id).unwrap();
+    let args = json!({"recovery_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":id,"review_snapshot":parent["data"]["rounds"][0]["snapshot"]["sha256"]});
+    let recovery = plugin::call(&s, "ses_test", "foreman_recover_qualification", &args).unwrap();
+    workflows::tick(&s, &f, &mut run).unwrap();
+    await_receipt(
+        &s.workflow(&text(&recovery, "id")).unwrap()["data"]["rounds"][0]["check_handle"],
+    );
+    let file = tmp.path().join("new-policy.md");
+    fs::write(&file, "Mandatory approved guidance").unwrap();
+    s.projects["project"]["review_prerequisites"] =
+        teem::prerequisites::normalise(&json!([file]), &tmp.path().join("source")).unwrap();
+    workflows::tick(&s, &f, &mut run).unwrap();
+    assert_eq!(
+        s.workflow(&text(&recovery, "id")).unwrap()["state"],
+        "reviewing"
+    );
+    assert_eq!(s.workflow(&id).unwrap(), parent);
+}
+
+#[test]
+fn descendant_handoff_preserves_inherited_prior_managers_read_access() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, w) = ready_operator_fixture(tmp.path());
+    for f in ["ses_b", "ses_c", "ses_d"] {
+        s.bind(f, f).unwrap();
+    }
+    plugin::call(&s,"ses_b","foreman_handoff",&json!({"workflow_id":w["id"],"source_foreman":"ses_test","reason":"Approved root handoff"})).unwrap();
+    let child = plugin::call(
+        &s,
+        "ses_b",
+        "foreman_reconcile",
+        &json!({"workflow_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":w["id"]}),
+    )
+    .unwrap();
+    plugin::call(
+        &s,
+        "ses_c",
+        "foreman_handoff",
+        &json!({"workflow_id":w["id"],"source_foreman":"ses_b","reason":"Approved root transfer"}),
+    )
+    .unwrap();
+    plugin::call(&s,"ses_d","foreman_handoff",&json!({"workflow_id":child["id"],"source_foreman":"ses_c","reason":"Approved descendant transfer"})).unwrap();
+    plugin::call(
+        &s,
+        "ses_b",
+        "foreman_status",
+        &json!({"workflow_id":child["id"]}),
+    )
+    .unwrap();
+    assert!(
+        s.workflows("ses_b")
+            .unwrap()
+            .iter()
+            .any(|v| v["id"] == child["id"])
+    );
+    assert!(teem::handoff::authorize(&s, "ses_b", &child, false).is_err());
+}
+
+#[test]
+fn result_details_preserve_reported_changes_and_bound_unicode_without_mutating_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (s, mut w) = ready_operator_fixture(tmp.path());
+    let worker_id = text(&w["data"]["rounds"][0], "worker_id");
+    s.exec(
+        "UPDATE tasks SET result=? WHERE id=?",
+        rusqlite::params![
+            format!(
+                "Fixed stale firmware qualification.\nRemaining: hardware validation pending.\n{}",
+                "🦀".repeat(4000)
+            ),
+            worker_id
+        ],
+    )
+    .unwrap();
+    let before = s.query("SELECT * FROM tasks", []).unwrap();
+    let events = s.query("SELECT * FROM events", []).unwrap();
+    let details = progress::result_details(&s, &w);
+    assert!(details.contains("Fixed stale firmware qualification."));
+    assert!(details.contains("hardware validation pending"));
+    assert!(details.contains("worker claims, not independent verification"));
+    assert!(details.contains("[excerpt; full evidence in foreman_status]"));
+    assert!(details.contains("tests: passed"));
+    assert!(details.contains("Correctness / security: pass"));
+    assert!(details.contains("Tests / regressions / scope: pass"));
+    assert!(details.contains("Integration: Not recorded in Teem; source was not inspected"));
+    assert!(details.len() < 10000);
+    assert_eq!(s.query("SELECT * FROM tasks", []).unwrap(), before);
+    assert_eq!(s.query("SELECT * FROM events", []).unwrap(), events);
+
+    w["data"]["rounds"][0]["snapshot"]["sha256"] = json!("different candidate");
+    let mismatched = progress::result_details(&s, &w);
+    assert!(!mismatched.contains("tests: passed"));
+    assert!(!mismatched.contains("security: pass"));
+    assert_eq!(
+        mismatched
+            .matches("snapshot mismatch; not qualified")
+            .count(),
+        3
+    );
+    w["data"]["rounds"][0]["review_results"][0] = json!({"snapshot":"different candidate","verdict":"changes_requested","findings":[{"path":"src/a","line":12,"message":"Stale firmware can still be accepted."}]});
+    w["data"]["rounds"][0]["check_result"]["snapshot"] = json!("different candidate");
+    w["data"]["rounds"][0]["check_result"]["results"][0]["timed_out"] = json!(true);
+    let failed = progress::result_details(&s, &w);
+    assert!(failed.contains("tests: failed (timeout)"));
+    assert!(failed.contains("src/a:12 — Stale firmware can still be accepted."));
+    w["data"]["rounds"] = json!([]);
+    let missing = progress::result_details(&s, &w);
+    assert!(missing.contains("No worker summary retained"));
+    assert!(missing.contains("tests: not recorded / not run"));
+    assert!(missing.contains("no valid verdict recorded"));
 }
 #[test]
 fn workflow_titles_are_readable_and_do_not_mutate_immutable_request() {

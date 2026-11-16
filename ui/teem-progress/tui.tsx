@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { Plugin } from '@opencode/plugin/tui'
 import { createMemo, createSignal, For, Show } from 'solid-js'
-import { installResultCommand, legacyTodoFallback, nativeTodos, parseProjection, resultNotice, selectProgress } from './progress.mjs'
+import { installResultCommand, legacyTodoFallback, nativeTodos, parseProjection, resultHint, selectProgress } from './progress.mjs'
 import { installEnableCommand, projectionFile } from './enable.mjs'
 
 export default Plugin.define({
@@ -10,7 +10,27 @@ export default Plugin.define({
     const [projection, setProjection] = createSignal<ReturnType<typeof parseProjection>>()
     const [now, setNow] = createSignal(Date.now() / 1000)
     const [feedback, setFeedback] = createSignal<Record<string, string>>({})
-    installResultCommand(context, (sessionID: string) => selectProgress(projection(), sessionID, now(), context.options))
+    installResultCommand(context, (sessionID: string) => selectProgress(projection(), sessionID, now(), context.options), value => {
+      context.ui.dialog.show(() => {
+        context.ui.dialog.set({ size: 'large' })
+        return <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
+          <text wrapMode="none" truncate height={1} fg={context.theme.text.base}><b>{value.title}</b></text>
+          <scrollbox maxHeight={12} focused>
+            <Show when={value.sections?.length} fallback={<text wrapMode="word" fg={context.theme.text.base}>{value.message}</text>}>
+              <box gap={1}>
+                <For each={value.sections}>{section => <box>
+                  <text wrapMode="word" fg={context.theme.text.base}><b>{section.title}</b></text>
+                  <text wrapMode="word" fg={context.theme.text.muted}>
+                    <For each={section.body.split(/(\*\*[^*\n]+\*\*)/g)}>{part => part.startsWith('**') && part.endsWith('**') ? <b>{part.slice(2,-2)}</b> : part}</For>
+                  </text>
+                </box>}</For>
+              </box>
+            </Show>
+          </scrollbox>
+          <text fg={context.theme.text.muted}>↑/↓ scroll · Esc close</text>
+        </box>
+      })
+    })
     installEnableCommand(context, (sessionID: string, message: string) => {
       if (sessionID) setFeedback(previous => ({ ...previous, [sessionID]: message }))
     })
@@ -38,10 +58,9 @@ export default Plugin.define({
     context.ui.slot({
       append: 'session.composer.top',
       render(props) {
-        const notice = createMemo(() => resultNotice(selectProgress(projection(), props.sessionID, now(), context.options)))
-        return <Show when={notice()}>{result => <box flexShrink={0}>
-          <text wrapMode="word" fg={context.theme.text.base}>{result().label} · {result().title}</text>
-          <text wrapMode="word" fg={context.theme.text.muted}>Read saved result: /teem-result</text>
+        const notice = createMemo(() => resultHint(selectProgress(projection(), props.sessionID, now(), context.options)))
+        return <Show when={notice()}>{hint => <box flexShrink={0} height={1}>
+          <text wrapMode="none" truncate fg={context.theme.text.muted}>{hint()}</text>
         </box>}</Show>
       },
     })
@@ -70,7 +89,7 @@ export default Plugin.define({
               <text wrapMode="word" fg={theme.text.muted}>Linked work · original owner retained</text>
             </Show>
             <text fg={theme.text.base} onMouseDown={() => setOpen(!open())}>
-              {open() ? '▾ ' : '▸ '}{passive() ? 'Teem · current work' : 'Todo'} ({remaining()})
+              {open() ? '▾ ' : '▸ '}{passive() ? passive()?.executionActive ? 'Teem · active work' : 'Teem · saved plan' : 'Todo'} ({remaining()})
             </text>
             <Show when={passive()?.stale}>
               <text fg={theme.text.feedback.warning.base}>Progress unavailable · last observation</text>
@@ -98,7 +117,7 @@ export default Plugin.define({
                 <text fg={theme.text.muted}>Details/history: foreman_status</text>
               </Show>
               <Show when={passive()?.latest_result}>{outcome => <box marginTop={1}>
-                <text fg={theme.text.base}>Latest result · {outcome().title}</text>
+                <text fg={theme.text.base}>{outcome().historical ? 'Saved result' : 'Latest result'} · {outcome().title}</text>
                 <text wrapMode="word" fg={outcome().state === 'ready' ? theme.text.muted : theme.text.feedback.warning.base}>
                   {outcome().content}
                 </text>

@@ -21,6 +21,33 @@ struct Fixture {
     store: Store,
     parent: String,
 }
+
+#[test]
+fn setup_recovery_blocked_review_can_requalify_after_explicit_delivery_repair() {
+    let mut f = Fixture::new(false);
+    let args = f.args();
+    let recovery = f.admit(&args).unwrap();
+    let rid = text(&recovery, "id");
+    let reviewing = f.tick_until(&rid, &["reviewing"], &mut runner());
+    for id in array(&reviewing["data"]["rounds"][0]["review_ids"]) {
+        f.store.update(id.as_str().unwrap(),"succeeded",&json!({"snapshot":reviewing["data"]["rounds"][0]["snapshot"]["sha256"],"verdict":"blocked","findings":[],"reason":"Required policy unavailable"}).to_string(),"").unwrap();
+    }
+    let blocked = f.tick_until(&rid, &["blocked"], &mut runner());
+    let file = f.tmp.path().join("new-policy.md");
+    fs::write(&file, "Approved policy delivery").unwrap();
+    f.store.projects["pilot"]["review_prerequisites"] =
+        teem::prerequisites::normalise(&json!([file]), &f.source).unwrap();
+    let args = json!({"recovery_id":uuid::Uuid::new_v4().to_string(),"source_workflow_id":rid,"review_snapshot":blocked["data"]["rounds"][0]["snapshot"]["sha256"]});
+    let next = f.admit(&args).unwrap();
+    let reviewing = f.tick_until(&text(&next, "id"), &["reviewing"], &mut runner());
+    f.finish_reviews(&reviewing, ["pass", "pass"]);
+    assert_eq!(
+        f.tick_until(&text(&next, "id"), &["ready"], &mut runner())["state"],
+        "ready"
+    );
+    f.no_recovery_workers(&text(&next, "id"));
+    assert_eq!(f.store.workflow(&rid).unwrap(), blocked);
+}
 impl Runtime for Fixture {
     fn request(&self, method: &str, path: &str, _: Option<&Value>) -> Result<Value> {
         assert_eq!((method, path), ("GET", "/api/session/ses_recovery"));
@@ -599,7 +626,9 @@ fn changes_after_reservation_fail_closed() {
             "source" => {
                 fs::write(f.source.join("src/a"), "drift\n").unwrap();
             }
-            "policy" => f.store.projects["pilot"]["max_revisions"] = json!(0),
+            // Scheduling budgets and read-only prerequisite delivery do not
+            // revoke existing qualification; approved check changes still do.
+            "policy" => f.store.projects["pilot"]["checks"][0]["timeout"] = json!(1),
             "parent" => {
                 f.store
                     .exec(

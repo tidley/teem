@@ -40,3 +40,21 @@ fn initial_instructions_separate_authority_execution_and_reporting() {
             .contains("Local commits of verified authorised work are permitted in this workflow")
     );
 }
+
+#[test]
+fn explicit_human_review_override_is_honoured_without_forging_qualification() {
+    let p: Value = serde_json::from_str(include_str!("../examples/pilot-foreman.json")).unwrap();
+    let prompt = p["agents"]["teem_foreman"]["system"].as_str().unwrap();
+    for rule in [
+        "Explicit human review override",
+        "Do not ask Tom to repeat an already explicit waiver",
+        "never passed or independently qualified",
+        "local-commit-only means NO PUSH",
+        "Do not commit inside a retained managed",
+    ] {
+        assert!(
+            prompt.contains(rule),
+            "Missing explicit override rule: {rule}"
+        );
+    }
+}

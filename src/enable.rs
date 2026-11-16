@@ -294,12 +294,13 @@ pub fn call(s: &Store, r: &dyn Runtime, envelope: &Value) -> Result<Value> {
         execution_project(s, &receipt)?;
     }
     if name == "foreman_reconcile" || name == "foreman_recover_qualification" {
-        execution_project(s, &receipt)?;
         let source = s.workflow(&text(input, "source_workflow_id"))?;
-        ensure!(
-            source["foreman"] == id,
-            "Candidate belongs to another Foreman"
-        );
+        let owner = crate::handoff::authorize(s, &id, &source, false)?;
+        // An explicit handoff authorises only this retained task, even when
+        // the receiving chat is elsewhere. New workflows still need a home policy.
+        if owner == id {
+            execution_project(s, &receipt)?;
+        }
     }
     // Inspection remains available even for retained evidence from other projects.
     plugin::call(s, &id, &name, input)

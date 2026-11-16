@@ -144,6 +144,154 @@ fn retained(s: &Store, w: &Value) -> Result<Value> {
     retained_at(s, w, true)
 }
 
+fn review_recovery(w: &Value) -> bool {
+    w["request"]["qualification_recovery"]["kind"] == "review_prerequisites"
+}
+
+// Explicit review_snapshot is the caller's qualification-only authority, not
+// an inference that historical changes_requested prose was infrastructure-only.
+fn retained_review(s: &Store, w: &Value) -> Result<Value> {
+    retained_review_at(s, w, 0)
+}
+
+fn retained_review_at(s: &Store, w: &Value, depth: usize) -> Result<Value> {
+    ensure!(
+        depth < 16,
+        "Review recovery provenance exceeds its bounded lineage"
+    );
+    ensure!(
+        ["blocked", "needs_attention"].contains(&text(w, "state").as_str())
+            && w["integration"].is_null()
+            && w["stop"].is_null(),
+        "Review recovery requires an unpaused, unintegrated terminal candidate"
+    );
+    let qualification = w["request"].get("qualification_recovery").is_some();
+    let setup_recovery =
+        w["request"]["qualification_recovery"]["arguments"]["expected_snapshot"].is_string();
+    ensure!(
+        (!qualification || review_recovery(w) || setup_recovery)
+            && w["data"].get("resume_phase").is_none(),
+        "Do not renew qualification attempts or replace uncertain work"
+    );
+    let r = last(w)?;
+    if qualification {
+        let current = &s.projects[text(w, "project")];
+        let effective = crate::prerequisites::effective_policy(w);
+        let refs = &w["policy"]["reference_paths"];
+        let reference_delivery_repaired = !array(refs).is_empty()
+            && array(&r["review_ids"]).iter().all(|id| {
+                s.task(id.as_str().unwrap_or(""))
+                    .is_ok_and(|t| t["request"].get("reference_paths").is_none())
+            });
+        ensure!(
+            array(&r["review_results"])
+                .iter()
+                .any(|v| v["verdict"] == "blocked")
+                && (current.get("review_prerequisites") != effective.get("review_prerequisites")
+                    || reference_delivery_repaired),
+            "Another blocked review requires a new prerequisite/reference-delivery repair and explicit requalification; never renew an unchanged attempt"
+        );
+        let recovery = &w["request"]["qualification_recovery"];
+        let parent = s.workflow(&text(recovery, "source_workflow_id"))?;
+        ensure!(
+            digest(&parent) == recovery["parent_sha256"]
+                && digest(&parent_tasks(s, &parent)?) == recovery["parent_tasks_sha256"],
+            "Inherited implementation provenance changed"
+        );
+        let original = if setup_recovery {
+            validate_parent(s, w, true)?;
+            last(&parent)?
+        } else {
+            retained_review_at(s, &parent, depth + 1)?
+        };
+        ensure!(
+            original["snapshot"]["sha256"] == r["snapshot"]["sha256"]
+                && original["snapshot"]["tree"] == r["snapshot"]["tree"],
+            "Qualification lineage changed the candidate"
+        );
+    }
+    checkouts::verify(&r["snapshot"])?;
+    ensure!(
+        r["snapshot"]["base"] == w["base_revision"]
+            && r["check_result"]["passed"] == true
+            && checks::inspect(&r["check_handle"])? == Some(r["check_result"].clone())
+            && r["check_result"]["snapshot"] == r["snapshot"]["sha256"],
+        "Review recovery requires verified passing exact-candidate check evidence"
+    );
+    for key in ["checkout", "check_checkout"] {
+        checkouts::validate(
+            Path::new(&text(&r, key)),
+            &text(w, "base_revision"),
+            &text(&r["snapshot"], "tree"),
+        )?;
+    }
+    crate::reconcile::validate_scope(
+        Path::new(&text(&r, "checkout")),
+        w,
+        &text(&r["snapshot"], "tree"),
+    )?;
+    let workers = r
+        .get("worker_ids")
+        .map(array)
+        .unwrap_or_else(|| vec![r["worker_id"].clone()]);
+    ensure!(
+        if qualification {
+            workers.iter().all(Value::is_null)
+        } else {
+            !workers.is_empty()
+                && workers.len() <= 2
+                && (workers.len() == 1 || workers[0] != workers[1])
+        },
+        "Retained implementation provenance required"
+    );
+    for id in workers.into_iter().filter(|id| !id.is_null()) {
+        let task = s.task(id.as_str().context("Missing implementation identity")?)?;
+        let native = uuid(&text(&task, "id"))?.simple().to_string();
+        ensure!(
+            task["role"] == "worker"
+                && task["state"] == "succeeded"
+                && task["foreman"] == w["foreman"]
+                && task["request"]["workflow_id"] == w["id"]
+                && task["request"]["revision"] == w["base_revision"]
+                && task["request"]["issue"] == w["request"]["issue"]
+                && task["session_id"] == format!("ses_foreman_{native}")
+                && task["prompt_id"] == format!("msg_foreman_{native}"),
+            "Retained implementation provenance changed"
+        );
+    }
+    let ids = array(&r["review_ids"]);
+    ensure!(
+        ids.len() == 2 && ids[0] != ids[1],
+        "Two distinct finished review identities required"
+    );
+    let mut results = Vec::new();
+    for id in ids {
+        let task = s.task(id.as_str().context("Invalid reviewer ID")?)?;
+        ensure!(
+            task["role"] == "reviewer"
+                && task["state"] == "succeeded"
+                && task["foreman"] == w["foreman"]
+                && task["request"]["workflow_id"] == w["id"]
+                && task["request"]["input_tree"] == r["snapshot"]["tree"],
+            "Reviewer provenance is not complete"
+        );
+        checkouts::validate(
+            Path::new(&text(&task, "checkout")),
+            &text(w, "base_revision"),
+            &text(&r["snapshot"], "tree"),
+        )?;
+        results.push(crate::workflows::verdict(
+            &text(&task, "result"),
+            &r["snapshot"],
+        )?);
+    }
+    ensure!(
+        json!(results) == r["review_results"] && results.iter().any(|v| v["verdict"] != "pass"),
+        "Retained review results changed or candidate is already qualified"
+    );
+    Ok(r)
+}
+
 /// Only the explicit stopped-input path may supply its own lineage validation.
 /// Snapshot, native provenance and positive non-launch requirements stay intact.
 pub(crate) fn stopped_input_candidate(s: &Store, w: &Value) -> Result<Value> {
@@ -234,9 +382,10 @@ fn retained_at(s: &Store, w: &Value, same_source: bool) -> Result<Value> {
 
 pub fn validate_current(s: &Store, w: &Value) -> Result<()> {
     ensure!(
-        s.projects[text(w, "project")] == w["policy"],
+        crate::workflows::compatible_policy(&s.projects[text(w, "project")], &w["policy"]),
         "Project policy changed; explicit reconciliation/requalification is required"
     );
+    crate::prerequisites::validate(&crate::prerequisites::effective_policy(w))?;
     ensure!(
         checkouts::source_revision(Path::new(&text(&w["policy"], "path")))?
             == text(w, "base_revision"),
@@ -261,6 +410,11 @@ fn validate_parent(s: &Store, w: &Value, same_source: bool) -> Result<()> {
     let root = text(&w["request"], "reconcile_root");
     ensure!(s.query("SELECT workflow_stops.workflow_id FROM workflow_stops JOIN workflows ON workflows.id=workflow_stops.workflow_id WHERE workflows.id=? OR COALESCE(json_extract(workflows.request,'$.reconcile_root'),json_extract(workflows.request,'$.reconcile_from'))=?", [&root, &root])?.is_empty(), "Lineage was paused; preserve it without recovery progression");
     ensure!(s.query("SELECT task_stops.task_id FROM task_stops JOIN tasks ON tasks.id=task_stops.task_id JOIN workflows ON workflows.id=json_extract(tasks.request,'$.workflow_id') WHERE workflows.id=? OR COALESCE(json_extract(workflows.request,'$.reconcile_root'),json_extract(workflows.request,'$.reconcile_from'))=?", [&root, &root])?.is_empty(), "Lineage has a task-stop record; preserve it without recovery progression");
+    if review_recovery(w) {
+        ensure!(same_source, "Review recovery cannot become a setup handoff");
+        retained_review(s, &parent)?;
+        return Ok(());
+    }
     let prior = retained_at(s, &parent, same_source)?;
     ensure!(
         non_launch_proof(s, &parent, &prior)? == recovery["non_launch_proof"],
@@ -296,10 +450,10 @@ pub fn submit(s: &Store, f: &str, args: &Value) -> Result<Value> {
     s.binding(f)?;
     ensure!(
         args.as_object().is_some_and(|m| m.len() == 3
-            && ["recovery_id", "source_workflow_id", "expected_snapshot"]
-                .iter()
-                .all(|k| m.contains_key(*k))),
-        "Use recovery_id, source_workflow_id and expected_snapshot only"
+            && m.contains_key("recovery_id")
+            && m.contains_key("source_workflow_id")
+            && (m.contains_key("expected_snapshot") != m.contains_key("review_snapshot"))),
+        "Use recovery_id, source_workflow_id and exactly one of expected_snapshot or review_snapshot"
     );
     let id = text(args, "recovery_id");
     let parent_id = text(args, "source_workflow_id");
@@ -318,8 +472,20 @@ pub fn submit(s: &Store, f: &str, args: &Value) -> Result<Value> {
         let root = parent["request"]["reconcile_root"].as_str().unwrap_or(&parent_id);
         lineage(s, root, None, true)?;
         ensure!(s.query("SELECT id FROM workflows WHERE json_extract(request,'$.qualification_recovery.source_workflow_id')=?", [&parent_id])?.is_empty(), "A recovery identity already exists for this candidate; retain it, do not bypass its findings");
-        let r = retained(s, &parent)?;
-        ensure!(r["snapshot"]["sha256"] == args["expected_snapshot"], "Expected snapshot digest differs from retained candidate");
+        let review = args.get("review_snapshot").is_some();
+        let r = if review { retained_review(s,&parent)? } else { retained(s, &parent)? };
+        ensure!(r["snapshot"]["sha256"] == args[if review { "review_snapshot" } else { "expected_snapshot" }], "Expected snapshot digest differs from retained candidate");
+        let policy = if review {
+            let current = s.projects[text(&parent,"project")].clone();
+            let mut a = current.clone(); let mut b = parent["policy"].clone();
+            for key in ["review_prerequisites","max_revisions"] {
+                a.as_object_mut().context("Project policy removed")?.remove(key);
+                b.as_object_mut().context("Invalid parent policy")?.remove(key);
+            }
+            ensure!(a == b,"Review recovery may repair declared prerequisites only; checks, source and authority must not change");
+            crate::prerequisites::validate(&current)?;
+            current
+        } else { parent["policy"].clone() };
         let mut req = parent["request"].clone();
         req.as_object_mut().context("Invalid parent request")?.remove("workers");
         // A qualification successor is not an implementation reconciliation.
@@ -328,12 +494,14 @@ pub fn submit(s: &Store, f: &str, args: &Value) -> Result<Value> {
         req.as_object_mut().unwrap().remove("reconcile_setup_handoff");
         req["workflow_id"] = json!(id);
         req["reconcile_root"] = json!(root);
-        req["qualification_recovery"] = json!({"arguments":args,"source_workflow_id":parent_id,"parent_sha256":digest(&parent),"parent_tasks_sha256":digest(&parent_tasks(s, &parent)?),"non_launch_proof":non_launch_proof(s, &parent, &r)?});
-        let w = json!({"request":req,"project":parent["project"],"policy":parent["policy"],"base_revision":parent["base_revision"]});
+        req["qualification_recovery"] = json!({"arguments":args,"source_workflow_id":parent_id,"parent_sha256":digest(&parent),"parent_tasks_sha256":digest(&parent_tasks(s, &parent)?)});
+        if review { req["qualification_recovery"]["kind"] = json!("review_prerequisites"); }
+        else { req["qualification_recovery"]["non_launch_proof"] = non_launch_proof(s,&parent,&r)?; }
+        let w = json!({"request":req,"project":parent["project"],"policy":policy,"base_revision":parent["base_revision"]});
         validate_current(s, &w)?;
         let reserved = s.query("SELECT count(*) AS n FROM workflows WHERE foreman=? AND state NOT IN ('ready','blocked','needs_attention')", [f])?;
         ensure!(reserved[0]["n"].as_u64().unwrap_or(32) < 32, "Too many reserved workflows");
-        s.exec("INSERT INTO workflows(id,foreman,project,request,policy,base_revision,state,created) VALUES (?,?,?,?,?,?,'qualification_queued',?)", params![id,f,text(&parent,"project"),canonical(&req),canonical(&parent["policy"]),text(&parent,"base_revision"),now()])?;
+        s.exec("INSERT INTO workflows(id,foreman,project,request,policy,base_revision,state,created) VALUES (?,?,?,?,?,?,'qualification_queued',?)", params![id,f,text(&parent,"project"),canonical(&req),canonical(&policy),text(&parent,"base_revision"),now()])?;
         s.workflow(&id)
     })
 }
@@ -349,7 +517,12 @@ pub fn start(s: &Store, w: &mut Value, runner: &mut checks::Runner) -> Result<()
         &w["request"]["qualification_recovery"],
         "source_workflow_id",
     ))?;
-    let prior = retained(s, &parent)?;
+    let prior = if review_recovery(w) {
+        retained_review(s, &parent)?
+    } else {
+        retained(s, &parent)?
+    };
+    crate::prerequisites::validate(&crate::prerequisites::effective_policy(w))?;
     s.save_workflow(
         w,
         "snapshotting",

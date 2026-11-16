@@ -367,6 +367,14 @@ fn revision_retains_exact_checks_and_bounds_multibyte_feedback() {
     let revision = prompt.split_once(marker).unwrap().1;
     let retained = revision.lines().next().unwrap();
     assert_eq!(retained, &feedback[..end]);
+    assert!(prompt.contains(".git/teem-correction-evidence.json"));
+    assert_eq!(
+        fs::read_to_string(
+            PathBuf::from(text(&task, "checkout")).join(".git/teem-correction-evidence.json")
+        )
+        .unwrap(),
+        feedback
+    );
     for key in ["snapshot", "check_result", "check_handle", "worker_id"] {
         assert_eq!(
             revised["data"]["rounds"][0][key],

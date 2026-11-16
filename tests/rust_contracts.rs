@@ -183,10 +183,13 @@ fn installed_binary_and_mcp_round_trip_need_no_python_runtime() {
         vec![
             "foreman_ack",
             "foreman_color",
+            "foreman_handoff",
             "foreman_integrate",
             "foreman_plan",
             "foreman_reconcile",
             "foreman_recover_qualification",
+            "foreman_repair_prerequisites",
+            "foreman_result_notice",
             "foreman_status",
             "foreman_stop",
             "foreman_submit",

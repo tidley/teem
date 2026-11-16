@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### 2026-11-16
+
+- Pin declared review prerequisite files and supply local read-only copies and
+  preloaded guidance to workers and reviewers, with launch-time preflight checks.
+- Separate access/setup-blocked review verdicts from source findings and code
+  corrections. Add explicit unchanged-candidate review requalification without
+  implementation workers, parent rewrites or automatic counter renewal.
+- Show actionable result reasons first with distinct scrollable sections and
+  worker claims below recorded verification; name automatic correction limits.
+- Honour explicit human review waivers in agent instructions without fabricating
+  passing reviews or expanding commit/push, runtime or device authority.
+
+- Expand `/teem-result` into a scrollable retained-evidence view: worker-reported
+  changes and limitations, named checks, snapshot-bound review verdicts and
+  findings, and separate local integration, publication and deployment status.
+  Keep claims distinct from verification, show missing or shortened evidence,
+  and preserve read-only retrieval and legacy projection support.
+
 ### 2026-11-15
 
 #### Changed

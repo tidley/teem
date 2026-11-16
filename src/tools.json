@@ -211,15 +211,16 @@
   },
   {
     "name": "foreman_recover_qualification",
-    "description": "Explicit qualification-only recovery of a retained setup-blocked candidate with positive snapshot-bound non-launch proof. Retain recovery_id and expected_snapshot SHA-256. Preserves issue, scope, base, policy, native provenance and parent history. Fresh approved checks and two independent exact-candidate read-only reviews; NEVER implementation/correction workers. Findings stop for explicit scoped correction. Rejects changed source/policy, paused/uncertain lineage, ambiguous historical evidence and duplicate attempts. Immutable ID retries return the existing attempt without replay. No integration or publication authority. Inspect status with recovery_id as workflow_id.",
+    "description": "Explicit qualification-only recovery, NEVER implementation/correction workers. Use expected_snapshot for a retained setup-blocked candidate with positive non-launch proof, OR review_snapshot for a terminal unintegrated candidate with passing verified checks and two completed valid non-unanimous review verdicts. review_snapshot explicitly authorises fresh qualification, not a claim that historical findings were infrastructure-only: all prior findings remain visible. Review recovery may change declared review_prerequisites only (not source/checks/authority), preserves the parent and runs fresh checks plus two reviews. Findings stop for explicit correction; no repeated qualification successors. Rejects source/policy drift, paused/uncertain lineage, changed evidence and duplicate attempts. Retain recovery_id; immutable retries return existing evidence without replay. No integration/publication authority. Inspect status with recovery_id as workflow_id.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "recovery_id": {"type":"string"},
         "source_workflow_id": {"type":"string"},
-        "expected_snapshot": {"type":"string","pattern":"^[0-9a-f]{64}$"}
+        "expected_snapshot": {"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "review_snapshot": {"type":"string","pattern":"^[0-9a-f]{64}$","description":"Explicit retained-candidate review requalification; mutually exclusive with expected_snapshot. Preserves historical findings and parent; no implementation workers or budget renewal."}
       },
-      "required": ["recovery_id","source_workflow_id","expected_snapshot"],
+      "required": ["recovery_id","source_workflow_id"],
       "additionalProperties": false
     }
   },
@@ -232,6 +233,26 @@
       "required": ["project", "color"],
       "additionalProperties": false
     }
+  },
+  {
+    "name": "foreman_result_notice",
+    "description": "Archive or restore one saved result notice for this Foreman's terminal workflow, with an explicit reason. Use after user-requested dismissal or verified resolution/supersession outside Teem. Changes presentation only: NEVER execution state, qualification, integration, event acknowledgement, retained snapshots or checklists. Cannot hide queued/active/uncertain native work. Archives are reversible and recorded in notice history. Archiving the latest result does not expose an older failure as current. Read full evidence and verify scope first; a push alone does not prove every task complete.",
+    "inputSchema": {
+      "type":"object",
+      "properties":{"workflow_id":{"type":"string"},"action":{"type":"string","enum":["archive","restore"]},"reason":{"type":"string","minLength":1,"maxLength":500}},
+      "required":["workflow_id","action","reason"],
+      "additionalProperties":false
+    }
+  },
+  {
+    "name":"foreman_repair_prerequisites",
+    "description":"After explicit same-task repair approval, resume a prerequisite-only project-policy stop during implementation by observing the SAME admitted worker identities. Never launches or replays workers, changes source/checks/permissions/scope/budget, ignores uncertainty, resumes user-stopped work or qualifies code. Requires the exact policy-change blocker, no candidate/check/reviewer admission yet, unchanged execution policy and existing nonfailed/nonuncertain workers. Records prerequisite-pin history and a recovery receipt; preserves original admission policy/request and old notification. Idempotent for the same workflow. Use retained-candidate qualification recovery instead once candidate/check/review evidence exists.",
+    "inputSchema":{"type":"object","properties":{"workflow_id":{"type":"string"}},"required":["workflow_id"],"additionalProperties":false}
+  },
+  {
+    "name":"foreman_handoff",
+    "description":"Only after explicit human approval, take over MANAGEMENT of one named workflow and its explicit same-task descendants in this authenticated chat. Supply the exact current source_foreman and a reason. Preserves original worker/session/prompt identities, admission policy, snapshots, findings, stop/uncertainty records and old notifications. Unrelated workflows remain isolated. The previous manager retains read access but cannot mutate handed-off work. Future terminal notifications route to the new manager; prior notifications are never replayed. This is not execution, replay, qualification, integration, publication, device or budget-renewal approval. Handoff is recorded, reversible through another explicit handoff, and idempotent for the same request. Inspect with workflow_id/task_id; unscoped tools gain no other chat's authority.",
+    "inputSchema":{"type":"object","properties":{"workflow_id":{"type":"string"},"source_foreman":{"type":"string"},"reason":{"type":"string","minLength":1,"maxLength":500}},"required":["workflow_id","source_foreman","reason"],"additionalProperties":false}
   },
   {
     "name": "foreman_workflow",

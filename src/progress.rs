@@ -66,6 +66,225 @@ pub fn title(w: &Value) -> String {
         title.into()
     }
 }
+
+// A retained observation, not a new qualification or a model-generated summary.
+pub fn result_sections(s: &Store, w: &Value) -> Vec<Value> {
+    fn excerpt(value: &str, max: usize) -> String {
+        let clean: String = value
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n')
+            .collect();
+        if clean.len() <= max {
+            return clean;
+        }
+        let mut end = max;
+        while !clean.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!(
+            "{}… [excerpt; full evidence in foreman_status]",
+            &clean[..end]
+        )
+    }
+    let empty = Value::Null;
+    let round = w["data"]["rounds"]
+        .as_array()
+        .and_then(|r| r.last())
+        .unwrap_or(&empty);
+    let snapshot = text(&round["snapshot"], "sha256");
+    let candidate_detail = w.get("candidate_detail").unwrap_or(&w["detail"]);
+    let detail = candidate_detail.as_str().unwrap_or("");
+    let detail = if detail.starts_with("Revision budget exhausted") {
+        format!(
+            "Automatic code-correction limit reached: {} attempts. Candidate and evidence retained.",
+            w["policy"]["max_revisions"]
+        )
+    } else {
+        excerpt(detail, 700)
+    };
+    let unresolved = array(&round["review_results"])
+        .into_iter()
+        .filter(|v| {
+            !snapshot.is_empty()
+                && v["snapshot"] == snapshot
+                && ["blocked", "changes_requested"].contains(&text(v, "verdict").as_str())
+        })
+        .min_by_key(|v| if v["verdict"] == "blocked" { 0 } else { 1 });
+    let blocker = crate::notices::blocker(w);
+    let (heading, summary) = if w["state"] != "ready" {
+        if let Some(review) = unresolved {
+            let blocked = review["verdict"] == "blocked";
+            let reason = if blocked {
+                text(&review, "reason")
+            } else {
+                text(&review["findings"][0], "message")
+            };
+            (
+                if blocked {
+                    "Review blocked"
+                } else {
+                    "Review not approved"
+                },
+                format!(
+                    "{}\n\nNext: the Foreman must resolve this review reason and qualify the retained candidate. A review access/setup failure is not a demonstrated firmware defect. No approval, integration or OTA is implied.\n\nRecorded controller state: {}\n{}",
+                    excerpt(&reason, 550),
+                    text(w, "state"),
+                    excerpt(&detail, 160)
+                ),
+            )
+        } else {
+            (
+                if blocker["kind"] == "source_changes" {
+                    "Source checkout blocked"
+                } else {
+                    "Stopped attempt"
+                },
+                format!("{detail}\n\nNext: {}", text(&blocker, "action")),
+            )
+        }
+    } else {
+        ("Outcome", format!("Recorded state: ready\n{detail}"))
+    };
+    let mut sections = vec![format!(
+        "{heading}\n{summary}\n\nProject: {}\nSource: {}\nThis is a retained attempt; the current working tree and publication were not rechecked.",
+        excerpt(&text(w, "project"), 64),
+        excerpt(&text(&w["policy"], "path"), 512)
+    )];
+    let ids = round
+        .get("worker_ids")
+        .map(array)
+        .unwrap_or_else(|| vec![round["worker_id"].clone()]);
+    let mut reports = Vec::new();
+    for id in ids.iter().take(2).filter_map(Value::as_str) {
+        if let Ok(task) = s.task(id) {
+            if task["foreman"] == w["foreman"]
+                && task["request"]["workflow_id"] == w["id"]
+                && task["role"] == "worker"
+            {
+                let report = text(&task, "result");
+                if !report.trim().is_empty() {
+                    reports.push(format!(
+                        "Worker {} ({}):\n{}",
+                        reports.len() + 1,
+                        text(&task, "state"),
+                        excerpt(&report, 1800)
+                    ));
+                }
+            }
+        }
+    }
+    let worker_section = if reports.is_empty() {
+        "Worker report\nNo worker summary retained for this round.".into()
+    } else {
+        format!(
+            "Worker report\nEarlier worker claims, not independent verification. Recorded checks and reviews above take precedence over this report's earlier pending/status wording.\n\n{}",
+            reports.join("\n\n")
+        )
+    };
+    let receipt = &round["check_result"];
+    let bound = !snapshot.is_empty() && receipt["snapshot"] == snapshot;
+    let checks = array(&receipt["results"]);
+    let mut rows = Vec::new();
+    for check in array(&w["policy"]["checks"]).iter().take(8) {
+        let found = checks.iter().find(|r| r["name"] == check["name"]);
+        let state = match found {
+            Some(_) if !bound => "snapshot mismatch; not qualified",
+            Some(r)
+                if r["returncode"] == 0
+                    && r["timed_out"] == false
+                    && r["output_limited"] == false =>
+            {
+                "passed"
+            }
+            Some(r) if r["timed_out"] == true => "failed (timeout)",
+            Some(r) if r["output_limited"] == true => "failed (output limit)",
+            Some(_) => "failed",
+            None => "not recorded / not run",
+        };
+        rows.push(format!("{}: {state}", excerpt(&text(check, "name"), 64)));
+    }
+    sections.push(format!(
+        "Checks\nRecorded candidate evidence:\n{}",
+        if rows.is_empty() {
+            "No check results recorded.".into()
+        } else {
+            rows.join("\n")
+        }
+    ));
+    let reviews = array(&round["review_results"]);
+    let review_rows = (0..2)
+        .map(|index| {
+            let review = reviews.get(index).unwrap_or(&empty);
+            let verdict = match text(review, "verdict").as_str() {
+                "pass" | "changes_requested" | "blocked"
+                    if !snapshot.is_empty() && review["snapshot"] == snapshot =>
+                {
+                    text(review, "verdict")
+                }
+                "pass" | "changes_requested" | "blocked" => {
+                    "snapshot mismatch; not qualified".into()
+                }
+                _ => "no valid verdict recorded".into(),
+            };
+            let findings = array(&review["findings"]);
+            let mut row = format!(
+                "{}: {verdict} ({} findings)",
+                if index == 0 {
+                    "Correctness / security"
+                } else {
+                    "Tests / regressions / scope"
+                },
+                findings.len()
+            );
+            if review["verdict"] == "blocked" {
+                row.push_str(&format!(
+                    "\nReason: {}",
+                    excerpt(&text(review, "reason"), 500)
+                ));
+            }
+            for finding in findings.iter().take(2) {
+                row.push_str(&format!(
+                    "\n{}:{} — {}",
+                    excerpt(&text(finding, "path"), 120),
+                    finding["line"],
+                    excerpt(&text(finding, "message"), 500)
+                ));
+            }
+            if findings.len() > 2 {
+                row.push_str("\nMore findings retained; use foreman_status for all findings.");
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    sections.push(format!(
+        "Reviews\nRecorded exact-candidate verdicts:\n{}",
+        review_rows.join("\n")
+    ));
+    sections.push(format!(
+        "Delivery\nIntegration: {}\nPublication: not checked\nDeployment: not checked",
+        if w["integration"].is_null() {
+            "Not recorded in Teem; source was not inspected".into()
+        } else {
+            crate::operator::description(&w["integration"])
+        }
+    ));
+    sections.push(worker_section);
+    sections.push(format!("Evidence\nWorkflow: {}\nCandidate: {}\nUse foreman_status with this workflow_id for full reports, findings and check logs. These are retained records, not a fresh source or runtime inspection.", text(w, "id"), if snapshot.is_empty() { "not recorded" } else { &snapshot }));
+    sections
+        .into_iter()
+        .map(|section| {
+            let (title, body) = section.split_once('\n').unwrap_or((&section, ""));
+            json!({"title":title,"body":body})
+        })
+        .collect()
+}
+pub fn result_details(s: &Store, w: &Value) -> String {
+    result_sections(s, w)
+        .iter()
+        .map(|section| format!("{}\n{}", text(section, "title"), text(section, "body")))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
 fn unlinked_title(w: &Value) -> String {
     if let Some(t) = w["request"]["title"].as_str() {
         return t.into();
@@ -278,7 +497,11 @@ pub fn workflow_rows(s: &Store, f: &str) -> Result<Vec<Value>> {
                     desc = "passed; no findings".into();
                 } else {
                     status = "cancelled".into();
-                    desc = "changes requested; see recorded findings".into();
+                    desc = if v["verdict"] == "blocked" {
+                        format!("review blocked: {}", text(v, "reason"))
+                    } else {
+                        "changes requested; see recorded findings".into()
+                    };
                 }
             } else if st == "succeeded" {
                 status = "in_progress".into();
@@ -355,38 +578,23 @@ pub fn snapshot(s: &Store, f: &str) -> Result<Value> {
     }
     items.extend(workflow_rows(s, f)?);
     let mut result = json!({"todos":items.iter().map(|i|json!({"content":i["content"],"status":i["status"]})).collect::<Vec<_>>(),"items":items});
-    let mut finished = s
-        .workflows(f)?
-        .into_iter()
-        .filter(|w| FINAL.contains(&text(w, "state").as_str()))
-        .collect::<Vec<_>>();
-    finished.sort_by(|a, b| {
-        a["data"]["finished_at"]
-            .as_f64()
-            .or(a["created"].as_f64())
-            .unwrap_or(0.0)
-            .total_cmp(
-                &b["data"]["finished_at"]
-                    .as_f64()
-                    .or(b["created"].as_f64())
-                    .unwrap_or(0.0),
-            )
-            .then_with(|| text(a, "id").cmp(&text(b, "id")))
-    });
-    if let Some(w) = finished.last() {
+    let works = s.workflows(f)?;
+    let (latest, notice) = crate::notices::select(s, &works)?;
+    if let Some(notice) = notice {
+        result["result_notice_cleared"] = json!(true);
+        result["result_notice"] = notice;
+    }
+    if let Some(w) = latest {
+        let blocker = crate::notices::blocker(w);
         let content = if !w["integration"].is_null() {
             crate::operator::description(&w["integration"])
         } else if w["state"] == "ready" {
-            "Completed · approved checks and both reviews passed; not integrated".into()
+            "Completed · approved checks and both reviews passed; integration not recorded".into()
         } else {
             format!(
-                "{} · {}",
-                if w["state"] == "blocked" {
-                    "Blocked"
-                } else {
-                    "Needs attention"
-                },
-                short(&compact(&text(w, "detail")), 800)
+                "Stopped attempt · {}. Next: {}",
+                short(&compact(&text(&blocker, "reason")), 400),
+                text(&blocker, "action")
             )
         };
         let title = issue_prefix(
@@ -402,8 +610,13 @@ pub fn snapshot(s: &Store, f: &str) -> Result<Value> {
                 units <= 300
             })
             .collect();
-        result["latest_result"] =
-            json!({"workflow_id":w["id"],"state":w["state"],"title":title,"content":content});
+        let sections = result_sections(s, w);
+        let details = sections
+            .iter()
+            .map(|section| format!("{}\n{}", text(section, "title"), text(section, "body")))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        result["latest_result"] = json!({"workflow_id":w["id"],"state":w["state"],"title":title,"content":content,"details":details,"sections":sections,"blocker":blocker,"historical":true,"recorded_at":w["data"]["finished_at"].as_f64().or(w["created"].as_f64()).unwrap_or(0.0)});
     }
     Ok(result)
 }

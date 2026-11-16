@@ -10,5 +10,11 @@ CREATE TABLE IF NOT EXISTS workflows(id TEXT PRIMARY KEY,foreman TEXT NOT NULL,p
 CREATE TABLE IF NOT EXISTS managed_checkouts(path TEXT PRIMARY KEY,workflow_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS agent_todos(task_id TEXT PRIMARY KEY,todos TEXT,message_id TEXT,next_read REAL NOT NULL DEFAULT 0,final INTEGER NOT NULL DEFAULT 0,detail TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS integrations(workflow_id TEXT PRIMARY KEY,receipt TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS result_notices(seq INTEGER PRIMARY KEY AUTOINCREMENT,workflow_id TEXT NOT NULL,foreman TEXT NOT NULL,action TEXT NOT NULL,reason TEXT NOT NULL,created REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS result_notices_workflow ON result_notices(workflow_id,seq);
+CREATE TABLE IF NOT EXISTS workflow_handoffs(seq INTEGER PRIMARY KEY AUTOINCREMENT,workflow_id TEXT NOT NULL,original_foreman TEXT NOT NULL,source_foreman TEXT NOT NULL,target_foreman TEXT NOT NULL,reason TEXT NOT NULL,created REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS workflow_handoffs_workflow ON workflow_handoffs(workflow_id,seq);
+CREATE INDEX IF NOT EXISTS workflow_handoffs_target ON workflow_handoffs(target_foreman);
+CREATE INDEX IF NOT EXISTS workflow_handoffs_owner ON workflow_handoffs(original_foreman);
 CREATE TABLE IF NOT EXISTS workflow_stops(workflow_id TEXT PRIMARY KEY,requested REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS task_stops(task_id TEXT PRIMARY KEY,state TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '');

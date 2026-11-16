@@ -139,12 +139,35 @@ function latestResult(value) {
   if (!['ready', 'blocked', 'needs_attention'].includes(value.state) ||
       typeof value.workflow_id !== 'string' || !value.workflow_id ||
       typeof value.title !== 'string' || !value.title || value.title.length > 300 ||
-      typeof value.content !== 'string' || !value.content || value.content.length > 2000) {
+      typeof value.content !== 'string' || !value.content || value.content.length > 2000 ||
+      (value.details !== undefined && (typeof value.details !== 'string' || value.details.length > 10000))) {
     throw new Error('Invalid Teem outcome')
   }
   const clean = text => text.replace(/[\x00-\x1f\x7f]/g, ' ')
+  const multiline = text => text.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, ' ')
+  let sections
+  let blocker
+  if (value.blocker != null) {
+    if (!['kind', 'project', 'source', 'reason', 'action'].every(key => bounded(value.blocker[key], key === 'source' ? 8192 : 2000)) ||
+        value.blocker.current_source_checked !== false) throw new Error('Invalid Teem blocker')
+    blocker = Object.fromEntries(['kind', 'project', 'source', 'reason', 'action'].map(key => [key, clean(value.blocker[key])]))
+    blocker.current_source_checked = false
+  }
+  if (value.recorded_at !== undefined && (!Number.isFinite(value.recorded_at) || value.recorded_at < 0 || value.recorded_at > 8640000000000)) throw new Error('Invalid Teem result time')
+  if (value.sections !== undefined) {
+    if (!Array.isArray(value.sections) || value.sections.length === 0 || value.sections.length > 8 ||
+        value.sections.some(section => !section || typeof section.title !== 'string' || !section.title || section.title.length > 100 ||
+          typeof section.body !== 'string' || section.body.length > 5000) ||
+        value.sections.reduce((total, section) => total + section.title.length + section.body.length, 0) > 10000) throw new Error('Invalid Teem outcome')
+    sections = value.sections.map(section => ({ title: clean(section.title), body: multiline(section.body) }))
+  }
   return { latest_result: { workflow_id: value.workflow_id, state: value.state,
-    title: clean(value.title), content: clean(value.content) } }
+    title: clean(value.title), content: clean(value.content),
+    ...(value.details === undefined ? {} : { details: multiline(value.details) }),
+    ...(sections ? { sections } : {}),
+    ...(blocker ? { blocker } : {}),
+    ...(value.historical === true ? { historical: true } : {}),
+    ...(value.recorded_at === undefined ? {} : { recorded_at: value.recorded_at }) } }
 }
 
 export function parseProjection(value) {
@@ -156,6 +179,10 @@ export function parseProjection(value) {
     ([id, progress]) => {
       const rows = todos(progress?.todos)
       return [id, { todos: rows, ...latestResult(progress?.latest_result),
+        ...(progress?.result_notice_cleared === true ? { result_notice_cleared: true } : {}),
+        ...(Array.isArray(progress?.items) ? { executionActive: progress.items.some(item =>
+          ['queued', 'starting', 'accepted', 'running', 'uncertain'].includes(item?.task_state) ||
+          (typeof item?.workflow_state === 'string' && !['ready', 'blocked', 'needs_attention'].includes(item.workflow_state))) } : {}),
         ...(progress && Object.hasOwn(progress, 'items') ? { groups: sidebarGroups({ ...progress, todos: rows }) } : {}),
       }]
     },
@@ -166,10 +193,10 @@ export function selectProgress(projection, sessionID, now = Date.now() / 1000, o
   // Explicit read-only fallback for preserved work owned by a legacy chat.
   // This never changes submission identity or overwrites a chat's own progress.
   const own = projection?.sessions[sessionID]
-  const source = own && (own.todos.length || own.latest_result || own.groups?.length) ? sessionID : options?.progressSources?.[sessionID] ?? sessionID
+  const source = own && (own.todos.length || own.latest_result || own.groups?.length || own.result_notice_cleared) ? sessionID : options?.progressSources?.[sessionID] ?? sessionID
   const session = typeof source === 'string' ? projection?.sessions[source] : undefined
   if (!session) return undefined
-  return { todos: session.todos, ...(source !== sessionID ? { sourceSessionID: source } : {}), ...(session.groups ? { groups: session.groups } : {}), ...latestResult(session.latest_result), passive: true,
+  return { todos: session.todos, ...(source !== sessionID ? { sourceSessionID: source } : {}), ...(session.groups ? { groups: session.groups } : {}), ...(session.executionActive === undefined ? {} : { executionActive: session.executionActive }), ...latestResult(session.latest_result), passive: true,
     stale: now - projection.updated_at > 15 || projection.updated_at > now + 5 }
 }
 
@@ -177,23 +204,38 @@ export function resultNotice(progress) {
   const result = progress?.latest_result
   if (!result) return undefined
   return { label: progress.stale ? 'Teem last result · status unavailable' :
-    result.state === 'ready' ? 'Teem result available' : 'Teem needs attention',
-    title: result.title, content: result.content }
+    result.state === 'ready' ? 'Teem result available' : result.historical ? 'Teem saved stopped attempt' : 'Teem needs attention',
+    title: result.title, content: result.blocker ? `${result.blocker.reason}\nProject: ${result.blocker.project}\nSource: ${result.blocker.source}\nNext: ${result.blocker.action}` : result.content }
+}
+
+export function resultHint(progress) {
+  if (!progress?.latest_result) return undefined
+  const reason = progress.latest_result.sections?.[0]?.title
+  const label = progress.stale ? 'Teem result stale' :
+    progress.latest_result.state === 'ready' ? 'Teem result' :
+      progress.latest_result.blocker?.kind === 'source_changes' ? 'Teem saved source blocker' :
+      reason === 'Review blocked' ? 'Teem review blocked' :
+        reason === 'Review not approved' ? 'Teem review not approved' : 'Teem needs attention'
+  return `${label} · /teem-result`
 }
 
 // Local retrieval only: never submit another prompt or acknowledge an event.
-export function installResultCommand(context, select) {
-  context.keymap.layer(() => ({ commands: [{
+export function installResultCommand(context, select, present = value => context.ui.dialog.alert(value)) {
+  context.keymap.layer(() => ({ mode: 'global', commands: [{
     id: 'teem.result', title: 'Teem: show latest result', group: 'Teem', palette: true,
     slash: { name: 'teem-result' },
     async run() {
       const sessionID = context.ui.router.current()?.sessionID
       const progress = sessionID ? select(sessionID) : undefined
       const notice = resultNotice(progress)
-      await context.ui.dialog.alert(notice ? {
+      const warning = [progress?.sourceSessionID ? 'Linked work · original owner retained' : '',
+        progress?.stale ? 'Last observation; current status unavailable.' : '',
+        Number.isFinite(progress?.latest_result?.recorded_at) ? `Attempt recorded: ${new Date(progress.latest_result.recorded_at * 1000).toISOString()}` : ''].filter(Boolean).join('\n\n')
+      await present(notice ? {
         title: `${notice.label} · ${notice.title}`,
-        message: [progress.sourceSessionID ? 'Linked work · original owner retained' : '',
-          progress.stale ? 'Last observation; current status unavailable.' : '', notice.content].filter(Boolean).join('\n\n'),
+        message: [warning, progress.latest_result.details || notice.content].filter(Boolean).join('\n\n'),
+        ...(progress.latest_result.recorded_at === undefined ? {} : { recorded_at: progress.latest_result.recorded_at }),
+        ...(progress.latest_result.sections ? { sections: [ ...(warning ? [{ title: 'Observation', body: warning }] : []), ...progress.latest_result.sections ] } : {}),
       } : { title: 'Teem result', message: sessionID ?
         'No saved Teem result for this chat. Check foreman_status for work in progress or older history.' :
         'Open the intended chat before /teem-result.' })

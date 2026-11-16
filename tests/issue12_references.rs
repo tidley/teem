@@ -122,7 +122,8 @@ fn paths_are_existing_absolute_literals_and_aliases_have_one_frozen_identity() {
 }
 
 #[test]
-fn reference_rules_do_not_widen_files_edits_shell_reviewers_or_legacy_sessions() {
+fn reference_rules_allow_read_only_reviewers_without_widening_files_edits_shell_or_legacy_sessions()
+{
     let fixture: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
     let old = &fixture["task"];
     assert_eq!(runtime::permissions(old), fixture["permissions"]);
@@ -179,7 +180,19 @@ fn reference_rules_do_not_widen_files_edits_shell_reviewers_or_legacy_sessions()
     task["role"] = json!("reviewer");
     let mut reviewer = old.clone();
     reviewer["role"] = json!("reviewer");
-    assert_eq!(runtime::permissions(&task), runtime::permissions(&reviewer));
+    let rules = array(&runtime::permissions(&task));
+    assert!(rules.contains(
+        &json!({"action":"external_directory","resource":"/approved/library/**","effect":"allow"})
+    ));
+    assert!(!rules.iter().any(
+        |r| ["edit", "shell", "execute"].contains(&text(r, "action").as_str())
+            && r["effect"] == "allow"
+    ));
+    let without_references = rules
+        .into_iter()
+        .filter(|r| r["action"] != "external_directory")
+        .collect::<Vec<_>>();
+    assert_eq!(json!(without_references), runtime::permissions(&reviewer));
 }
 
 #[test]
@@ -275,7 +288,10 @@ fn managed_policy_is_project_local_retained_and_reconciliation_uses_current_poli
     assert!(s.submit("ses_test", req.clone()).is_err());
     req.as_object_mut().unwrap().remove("reference_paths");
     let reviewer = s.submit("ses_test", req).unwrap();
-    assert!(reviewer["request"].get("reference_paths").is_none());
+    assert_eq!(
+        reviewer["request"]["reference_paths"],
+        projects["project"]["reference_paths"]
+    );
     s.update(&text(&reviewer, "id"), "succeeded", "review fixture", "")
         .unwrap();
 
@@ -312,9 +328,12 @@ fn managed_policy_is_project_local_retained_and_reconciliation_uses_current_poli
     assert_eq!(w["state"], "reviewing", "{w}");
     for review in array(&w["data"]["rounds"][0]["review_ids"]) {
         let review = s.task(review.as_str().unwrap()).unwrap();
-        assert!(review["request"].get("reference_paths").is_none());
+        assert_eq!(
+            review["request"]["reference_paths"],
+            projects["project"]["reference_paths"]
+        );
         assert!(
-            !array(&runtime::permissions(&review))
+            array(&runtime::permissions(&review))
                 .iter()
                 .any(|r| r["action"] == "external_directory")
         );

@@ -1,5 +1,35 @@
 # Qualification-only recovery (#20 infrastructure)
 
+## Explicit review requalification (2026-11-16)
+
+The original setup-recovery contract below is unchanged. A separate alternative
+uses `review_snapshot` in place of `expected_snapshot`, with the same new
+`recovery_id` and original `source_workflow_id`. Never supply both snapshot keys.
+
+This path requires an unintegrated, unpaused terminal candidate, verified passing
+exact-snapshot check receipts, and two distinct completed reviewers with valid
+recorded verdicts, at least one not passing. It accepts historical
+`changes_requested` records only as an explicit request to requalify unchanged
+source, not as proof their findings were infrastructure-only. All prior verdicts
+are retained and supplied to the new reviewers. Invalid/unbound review output
+still uses its existing handoff contract, not this path.
+
+The source must remain clean at its original base. Scope, checks, references and
+all other authority remain fixed; only `review_prerequisites` and the scheduling
+counter policy may differ. New prerequisites must be explicitly configured and
+validated. Parent/native evidence is pinned and rechecked during progression.
+Paused or active/uncertain lineage, changed receipts or source, and duplicate
+attempts reject. An unchanged blocked attempt cannot renew qualification. A further
+explicit review requalification requires a strict `blocked` verdict and a new
+prerequisite or reference-delivery repair; all original provenance is revalidated.
+
+Fresh checks and two new independent reviews run without any implementation or
+correction worker. A fresh failure or blocked review stops honestly; no counter
+reset, permission expansion, integration or publication is implied. Same-ID
+retries remain read-idempotent, including after policy removal.
+
+## Original setup recovery contract
+
 `foreman_recover_qualification` reserves a linked qualification-only workflow.
 It preserves the retained candidate and parent history, and does not implement
 parent #20 or import #19/#21/#22. No source integration, installation, service
@@ -7,8 +37,9 @@ operation, publication or additional spending authority is granted.
 
 ## Explicit admission and retries
 
-Use the same authenticated native Foreman and configured project as the original
-workflow. Native dispatch checks host-provided session/agent identity and the
+Use the original authenticated native Foreman, or an explicitly approved scoped
+management handoff, with the original configured project. Native task ownership
+remains unchanged. Native dispatch checks host-provided session/agent identity and the
 current project policy for new admission. An existing recovery UUID retry is a
 read: it still authenticates the caller and validates ownership and all immutable
 arguments, even if execution policy has since been removed; it cannot relaunch.

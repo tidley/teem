@@ -154,7 +154,7 @@ pub fn tick(s: &Store, r: &dyn Runtime) -> Result<()> {
         if snapshot(s, &id)?["state"] == "stopped" {
             s.exec("UPDATE workflows SET detail='Stopped by user; selected native agents inactive; workflow paused; preserved work, no replacement' WHERE id=?",[&id])?;
             let w = s.workflow(&id)?;
-            s.exec("INSERT OR IGNORE INTO events(id,task_id,foreman,request_id,transport,refresh_todos,workflow_id) VALUES (?,?,?,?,'native',0,?)",params![uuid::Uuid::new_v4().to_string(),format!("workflow:{id}"),text(&w,"foreman"),uuid::Uuid::new_v4().to_string(),id])?;
+            s.exec("INSERT OR IGNORE INTO events(id,task_id,foreman,request_id,transport,refresh_todos,workflow_id) VALUES (?,?,?,?,'native',0,?)",params![uuid::Uuid::new_v4().to_string(),format!("workflow:{id}"),crate::handoff::manager(s,&w)?,uuid::Uuid::new_v4().to_string(),id])?;
         }
     }
     Ok(())
