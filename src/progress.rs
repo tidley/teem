@@ -38,7 +38,10 @@ pub fn set_plan(s: &Store, f: &str, items: &Value) -> Result<Value> {
                 "Linked plan status is supervisor-owned"
             );
             if let Ok(t) = s.task(task.as_str().unwrap()) {
-                ensure!(t["foreman"] == f, "Plan task belongs to another Foreman");
+                ensure!(
+                    t["foreman"] == f,
+                    "Plan task belongs to another Teem coordinator"
+                );
             }
         } else {
             ensure!(
@@ -81,10 +84,7 @@ pub fn result_sections(s: &Store, w: &Value) -> Vec<Value> {
         while !clean.is_char_boundary(end) {
             end -= 1;
         }
-        format!(
-            "{}… [excerpt; full evidence in foreman_status]",
-            &clean[..end]
-        )
+        format!("{}… [excerpt; full evidence in teem_status]", &clean[..end])
     }
     let empty = Value::Null;
     let round = w["data"]["rounds"]
@@ -126,7 +126,7 @@ pub fn result_sections(s: &Store, w: &Value) -> Vec<Value> {
                     "Review not approved"
                 },
                 format!(
-                    "{}\n\nNext: the Foreman must resolve this review reason and qualify the retained candidate. A review access/setup failure is not a demonstrated firmware defect. No approval, integration or OTA is implied.\n\nRecorded controller state: {}\n{}",
+                    "{}\n\nNext: Teem must resolve this review reason and qualify the retained candidate. A review access/setup failure is not a demonstrated firmware defect. No approval, integration or OTA is implied.\n\nRecorded controller state: {}\n{}",
                     excerpt(&reason, 550),
                     text(w, "state"),
                     excerpt(&detail, 160)
@@ -251,7 +251,7 @@ pub fn result_sections(s: &Store, w: &Value) -> Vec<Value> {
                 ));
             }
             if findings.len() > 2 {
-                row.push_str("\nMore findings retained; use foreman_status for all findings.");
+                row.push_str("\nMore findings retained; use teem_status for all findings.");
             }
             row
         })
@@ -269,7 +269,7 @@ pub fn result_sections(s: &Store, w: &Value) -> Vec<Value> {
         }
     ));
     sections.push(worker_section);
-    sections.push(format!("Evidence\nWorkflow: {}\nCandidate: {}\nUse foreman_status with this workflow_id for full reports, findings and check logs. These are retained records, not a fresh source or runtime inspection.", text(w, "id"), if snapshot.is_empty() { "not recorded" } else { &snapshot }));
+    sections.push(format!("Evidence\nWorkflow: {}\nCandidate: {}\nUse teem_status with this workflow_id for full reports, findings and check logs. These are retained records, not a fresh source or runtime inspection.", text(w, "id"), if snapshot.is_empty() { "not recorded" } else { &snapshot }));
     sections
         .into_iter()
         .map(|section| {

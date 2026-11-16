@@ -1,6 +1,6 @@
 # Issue #7: request-driven status tables
 
-For a user-requested issue/task overview, the tracked Foreman example profile
+For a user-requested issue/task overview, the tracked Teem example profile
 generally asks for a concise Markdown table. This is reporting guidance, not a
 renderer, UI redesign, new state/schema, or a guarantee of model behavior.
 Installing the profile has not been performed as part of this change; existing
@@ -39,7 +39,7 @@ need does not answer a card, grant permissions, or authorise integration.
 
 ## Evidence and boundaries
 
-- Read authoritative current `foreman_status` evidence. Prefer later integration
+- Read authoritative current `teem_status` evidence. Prefer later integration
   receipts over stale candidate outcomes; retain immutable candidates/history.
   Report a local commit only when recorded/verified, not merely worker-claimed.
 - **Agent working** distinguishes running, queued, none and unknown, with current

@@ -21,7 +21,7 @@ teem · #a12bc345 · check batch
 [ ] Clippy · pending (batch)
 [ ] Review · correctness · pending
 [ ] Review · tests/scope · pending
-Details/history: foreman_status
+Details/history: teem_status
 ```
 
 The count is displayed pending/active rows, **not running processes or remaining
@@ -44,7 +44,7 @@ not terminal-cell measurements; wide glyphs and long fallback/manual rows wrap.
   Original IDs, full labels/content, native-compatible `todos`, stored requests,
   results and history remain available. Individual unreported checks now have
   `pending` status even while their batch is active.
-- `foreman_status` provides the full IDs and bounded summaries. Request
+- `teem_status` provides the full IDs and bounded summaries. Request
   `{"mode":"detail","section":"progress","workflow_id":"EXACT_UUID"}`
   for full projected rows, or detail `overview` with that ID for recorded rounds,
   checks/reviews and integration receipts. Follow returned chunk pagination.

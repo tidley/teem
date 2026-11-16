@@ -2,8 +2,8 @@ use serde_json::Value;
 
 #[test]
 fn shipped_profile_defaults_to_engineering_decisions_and_final_briefing() {
-    let p: Value = serde_json::from_str(include_str!("../examples/pilot-foreman.json")).unwrap();
-    let prompt = p["agents"]["teem_foreman"]["system"].as_str().unwrap();
+    let p: Value = serde_json::from_str(include_str!("../examples/pilot-teem.json")).unwrap();
+    let prompt = p["agents"]["teem"]["system"].as_str().unwrap();
     for rule in [
         "Make routine in-scope engineering decisions without asking for approval",
         "At completion or a genuine blocker, briefly report decisions",
@@ -22,8 +22,8 @@ fn shipped_profile_defaults_to_engineering_decisions_and_final_briefing() {
 
 #[test]
 fn initial_instructions_separate_authority_execution_and_reporting() {
-    let p: Value = serde_json::from_str(include_str!("../examples/pilot-foreman.json")).unwrap();
-    let prompt = p["agents"]["teem_foreman"]["system"].as_str().unwrap();
+    let p: Value = serde_json::from_str(include_str!("../examples/pilot-teem.json")).unwrap();
+    let prompt = p["agents"]["teem"]["system"].as_str().unwrap();
     for heading in [
         "## Outcome",
         "## Authority",
@@ -43,8 +43,8 @@ fn initial_instructions_separate_authority_execution_and_reporting() {
 
 #[test]
 fn explicit_human_review_override_is_honoured_without_forging_qualification() {
-    let p: Value = serde_json::from_str(include_str!("../examples/pilot-foreman.json")).unwrap();
-    let prompt = p["agents"]["teem_foreman"]["system"].as_str().unwrap();
+    let p: Value = serde_json::from_str(include_str!("../examples/pilot-teem.json")).unwrap();
+    let prompt = p["agents"]["teem"]["system"].as_str().unwrap();
     for rule in [
         "Explicit human review override",
         "Do not ask Tom to repeat an already explicit waiver",

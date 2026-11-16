@@ -328,14 +328,17 @@ pub fn read(s: &Store, f: &str, args: &Value) -> Result<Value> {
             let w = s.workflow(workflow_id)?;
             ensure!(
                 w["foreman"] == f,
-                "Workflow does not belong to this Foreman"
+                "Workflow does not belong to this Teem coordinator"
             );
             works = vec![w];
             tasks.retain(|t| t["request"]["workflow_id"] == workflow_id);
         }
         if !task_id.is_empty() {
             let t = s.task(task_id)?;
-            ensure!(t["foreman"] == f, "Task does not belong to this Foreman");
+            ensure!(
+                t["foreman"] == f,
+                "Task does not belong to this Teem coordinator"
+            );
             works.retain(|w| t["request"]["workflow_id"] == w["id"]);
             tasks = vec![t];
         }

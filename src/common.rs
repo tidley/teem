@@ -267,7 +267,7 @@ pub fn in_scope(p: &str, scope: &[String]) -> bool {
         .any(|s| p == s || p.starts_with(&format!("{s}/")))
 }
 pub fn model(v: &Value) -> Result<Value> {
-    let m = v.as_object().context("Foreman needs an explicit model")?;
+    let m = v.as_object().context("Teem needs an explicit model")?;
     ensure!(
         m.contains_key("providerID")
             && m.contains_key("id")
@@ -276,7 +276,7 @@ pub fn model(v: &Value) -> Result<Value> {
             && m.values().all(|v| v.as_str().is_some_and(|s| !s.is_empty()
                 && s.len() <= 300
                 && !s.contains(['\n', '\r', '\0']))),
-        "Foreman needs an explicit provider, model and optional variant"
+        "Teem needs an explicit provider, model and optional variant"
     );
     Ok(v.clone())
 }

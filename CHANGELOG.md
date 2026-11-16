@@ -26,7 +26,7 @@
 
 - Make routine in-scope implementation and regression correction autonomous, with
   concise explanations of broken behaviour, decisions, verification and limits.
-- Organise the default Foreman instructions into outcome, authority, execution,
+- Organise the default Teem instructions into outcome, authority, execution,
   evidence and reporting; remove repeated guidance without widening permissions.
 - Allow one authenticated native chat to coordinate authorised work in another
   configured project. Preserve the home identity, target policy and native owner.

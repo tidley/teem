@@ -110,7 +110,7 @@ test('result command presents bounded multiline evidence without flattening or e
 
 test('structured results expose the actual review blocker before earlier worker claims', async () => {
   const sections = [
-    { title: 'Review blocked', body: 'Mandatory policy copy unavailable.\nNext: the Foreman must repair prerequisites and requalify.' },
+    { title: 'Review blocked', body: 'Mandatory policy copy unavailable.\nNext: Teem must repair prerequisites and requalify.' },
     { title: 'Checks', body: 'regressions: passed\nwhitespace: passed' },
     { title: 'Reviews', body: 'Correctness: blocked\nScope: pass' },
     { title: 'Worker report', body: 'Earlier worker claim: **pending** verification' },

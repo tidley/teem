@@ -5387,7 +5387,7 @@ fn result_details_preserve_reported_changes_and_bound_unicode_without_mutating_e
     assert!(details.contains("Fixed stale firmware qualification."));
     assert!(details.contains("hardware validation pending"));
     assert!(details.contains("worker claims, not independent verification"));
-    assert!(details.contains("[excerpt; full evidence in foreman_status]"));
+    assert!(details.contains("[excerpt; full evidence in teem_status]"));
     assert!(details.contains("tests: passed"));
     assert!(details.contains("Correctness / security: pass"));
     assert!(details.contains("Tests / regressions / scope: pass"));

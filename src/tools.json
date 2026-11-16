@@ -1,6 +1,6 @@
 [
   {
-    "name": "foreman_submit",
+    "name": "teem_submit",
     "description": "Queue one legacy headless task and return immediately. Prefer assignment for checkout/revision/scope/prompt so default tool text stays compact; expand the tool input for full text. Legacy top-level fields remain accepted but may display long text; never mix the two forms. Legacy tasks share two slots per role; managed tasks have independent teams. Queue acceptance is not execution. Reviews require a clean, complete checkout at a fixed commit. Workers may use sparse checkouts, whose tests cannot qualify integration. Never retry with a new UUID after an uncertain response.",
     "inputSchema": {
       "type": "object",
@@ -63,7 +63,7 @@
     }
   },
   {
-    "name": "foreman_status",
+    "name": "teem_status",
     "description": "Read bounded status (at most 24000 pretty-JSON bytes): authoritative worker/reviewer state counts, workflow titles, current-candidate checks and both review verdicts, integration receipts and unacknowledged events. Default summary pages contain up to two entries per collection; pages report totals and next_offset. Filter by task_id OR workflow_id across related collections. Use section and offset/limit for more summary rows (limit 1..5); pages can shrink to fit. Full requests/history/results remain available with mode=detail: select a task/workflow or section, optionally a JSON pointer, and concatenate JSON UTF-8 byte chunks using next_offset (limit 1..4096, default 2048). Restart retrieval if sha256 changes. Marked truncations and findings_total are not consumed evidence: retrieve relevant detail before reporting/acking. If output is inaccessible, retry a scoped section or smaller detail limit; never grant directory permissions, infer success from a spool path, or ack unseen evidence. succeeded is execution only, ready is candidate qualification, integration is not publication/runtime verification. Worker permission cards are for the human only; never answer them on their behalf.",
     "inputSchema": {
       "type": "object",
@@ -109,7 +109,7 @@
     }
   },
   {
-    "name": "foreman_ack",
+    "name": "teem_ack",
     "description": "Acknowledge one completion event after reading its result. Does not approve or merge code.",
     "inputSchema": {
       "type": "object",
@@ -125,8 +125,8 @@
     }
   },
   {
-    "name": "foreman_plan",
-    "description": "Define the current ordered checklist for this Foreman. Replace old completed work, preserving unrelated active work. Link execution items to retained task UUIDs before submission; the supervisor owns their status. Unlinked planning/verification items need an explicit status, based on evidence, not worker success. The passive Teem TUI displays supervisor progress. Do not copy it to native todowrite or poll to render it. No worker is dispatched and no Foreman turn is triggered by progress changes.",
+    "name": "teem_plan",
+    "description": "Define the current ordered checklist for this Teem coordinator. Replace old completed work, preserving unrelated active work. Link execution items to retained task UUIDs before submission; the supervisor owns their status. Unlinked planning/verification items need an explicit status, based on evidence, not worker success. The passive Teem TUI displays supervisor progress. Do not copy it to native todowrite or poll to render it. No worker is dispatched and no coordinator turn is triggered by progress changes.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -173,8 +173,8 @@
     }
   },
   {
-    "name": "foreman_stop",
-    "description": "After explicit user approval, request a stop for a workflow's active/queued native agents, optionally selecting one exact task_id. Durably pauses workflow progression first, preserves checkouts/results/evidence and prevents automatic replacement or revision. Stop admission is not proof execution ended: read status.stop until stopped or inspect a reported uncertainty; never auto-resend an uncertain interrupt. Does not stop Foreman, discard files, resume work or cancel running check subprocesses. Existing native identities must match. A selected task pauses the whole workflow but does not stop other already-running siblings.",
+    "name": "teem_stop",
+    "description": "After explicit user approval, request a stop for a workflow's active/queued native agents, optionally selecting one exact task_id. Durably pauses workflow progression first, preserves checkouts/results/evidence and prevents automatic replacement or revision. Stop admission is not proof execution ended: read status.stop until stopped or inspect a reported uncertainty; never auto-resend an uncertain interrupt. Does not stop the Teem coordinator, discard files, resume work or cancel running check subprocesses. Existing native identities must match. A selected task pauses the whole workflow but does not stop other already-running siblings.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -186,8 +186,8 @@
     }
   },
   {
-    "name": "foreman_integrate",
-    "description": "Within explicit user integration approval, apply an exact ready candidate to clean source at its qualified base. Rechecks approved tests and both snapshot-bound reviews. Revision-budget-only changes do not invalidate qualification; changed check requirements still do. With approved local-commit authority, commit_local=true also records the exact candidate locally so serial integrations can continue. Never pushes, deploys or repeats uncertain apply/commit operations. Alternatively provide the full existing commit ID to verify and record it. Dirty source must be preserved. Advanced source or changed checks need foreman_reconcile and fresh qualification, never force apply. Integration approval covers that same-task preparation, not publication or new scope.",
+    "name": "teem_integrate",
+    "description": "Within explicit user integration approval, apply an exact ready candidate to clean source at its qualified base. Rechecks approved tests and both snapshot-bound reviews. Revision-budget-only changes do not invalidate qualification; changed check requirements still do. With approved local-commit authority, commit_local=true also records the exact candidate locally so serial integrations can continue. Never pushes, deploys or repeats uncertain apply/commit operations. Alternatively provide the full existing commit ID to verify and record it. Dirty source must be preserved. Advanced source or changed checks need teem_reconcile and fresh qualification, never force apply. Integration approval covers that same-task preparation, not publication or new scope.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -200,7 +200,7 @@
     }
   },
   {
-    "name": "foreman_reconcile",
+    "name": "teem_reconcile",
     "description": "Continue the SAME authorised task from a ready, exhausted or managed confirmed-stopped candidate on current clean source/current policy. A blocked next-round Git timeout is also eligible only when the advanced round has no recorded round entry or reserved worker identity, even terminal; its previous real snapshot is retained and the no-launch guard is rechecked at seed. Preserve the failed directory; never replay its preparation. Explicit setup_snapshot also admits initial setup-blocked candidates with positive non-launch provenance and quiescent unpaused lineage; it never qualifies the old snapshot. Issue association is inherited and cannot switch; an unlinked historical source needs its explicitly authorised owner/repo#positive-number. A stopped source must be blocked and paused with a stopped receipt and a valid retained snapshot. Narrow exception: an initial single-worker reconciliation with no snapshot may use its immediate parent's real candidate only if the worker is confirmed stopped and unchanged, input equals base, seeded=false, and the pinned earlier patch/provenance verifies. Edited, successfully seeded or unproven inputs are rejected, never discarded. No queued/active/uncertain tasks, unresolved checks or unconfirmed stops anywhere in the lineage. Explicitly authorise stopped-work handoff first; never resume/replay the parent or fabricate a snapshot. Retain a new workflow_id and source_workflow_id; scope and acceptance criteria are inherited, not expanded. A dedicated worker receives the retained patch/findings for scoped conflict resolution; preserve newer code, never force apply to source. All checks and two independent reviews run afresh. No integration, commit, publication, native replay, active/uncertain replacement or duplicate active continuation. Integration approval covers necessary same-task preparation, not new scope or an endless retry loop.",
     "inputSchema": {
       "type":"object",
@@ -210,7 +210,7 @@
     }
   },
   {
-    "name": "foreman_recover_qualification",
+    "name": "teem_recover_qualification",
     "description": "Explicit qualification-only recovery, NEVER implementation/correction workers. Use expected_snapshot for a retained setup-blocked candidate with positive non-launch proof, OR review_snapshot for a terminal unintegrated candidate with passing verified checks and two completed valid non-unanimous review verdicts. review_snapshot explicitly authorises fresh qualification, not a claim that historical findings were infrastructure-only: all prior findings remain visible. Review recovery may change declared review_prerequisites only (not source/checks/authority), preserves the parent and runs fresh checks plus two reviews. Findings stop for explicit correction; no repeated qualification successors. Rejects source/policy drift, paused/uncertain lineage, changed evidence and duplicate attempts. Retain recovery_id; immutable retries return existing evidence without replay. No integration/publication authority. Inspect status with recovery_id as workflow_id.",
     "inputSchema": {
       "type": "object",
@@ -225,8 +225,8 @@
     }
   },
   {
-    "name": "foreman_color",
-    "description": "Set the bound Foreman's local UI accent to a six-digit hex color. Changes only agents.teem_foreman.color in the configured project's JSON profile; preserves permissions, MCP bindings and other settings. No shell or restart is needed.",
+    "name": "teem_color",
+    "description": "Set the bound Teem coordinator's local UI accent to a six-digit hex color. Changes only the bound legacy agent profile's color in the configured project's JSON; preserves permissions, MCP bindings and other settings. No shell or restart is needed.",
     "inputSchema": {
       "type": "object",
       "properties": { "project": { "type": "string" }, "color": { "type": "string" } },
@@ -235,8 +235,8 @@
     }
   },
   {
-    "name": "foreman_result_notice",
-    "description": "Archive or restore one saved result notice for this Foreman's terminal workflow, with an explicit reason. Use after user-requested dismissal or verified resolution/supersession outside Teem. Changes presentation only: NEVER execution state, qualification, integration, event acknowledgement, retained snapshots or checklists. Cannot hide queued/active/uncertain native work. Archives are reversible and recorded in notice history. Archiving the latest result does not expose an older failure as current. Read full evidence and verify scope first; a push alone does not prove every task complete.",
+    "name": "teem_result_notice",
+    "description": "Archive or restore one saved result notice for this Teem coordinator's terminal workflow, with an explicit reason. Use after user-requested dismissal or verified resolution/supersession outside Teem. Changes presentation only: NEVER execution state, qualification, integration, event acknowledgement, retained snapshots or checklists. Cannot hide queued/active/uncertain native work. Archives are reversible and recorded in notice history. Archiving the latest result does not expose an older failure as current. Read full evidence and verify scope first; a push alone does not prove every task complete.",
     "inputSchema": {
       "type":"object",
       "properties":{"workflow_id":{"type":"string"},"action":{"type":"string","enum":["archive","restore"]},"reason":{"type":"string","minLength":1,"maxLength":500}},
@@ -245,18 +245,18 @@
     }
   },
   {
-    "name":"foreman_repair_prerequisites",
+    "name":"teem_repair_prerequisites",
     "description":"After explicit same-task repair approval, resume a prerequisite-only project-policy stop during implementation by observing the SAME admitted worker identities. Never launches or replays workers, changes source/checks/permissions/scope/budget, ignores uncertainty, resumes user-stopped work or qualifies code. Requires the exact policy-change blocker, no candidate/check/reviewer admission yet, unchanged execution policy and existing nonfailed/nonuncertain workers. Records prerequisite-pin history and a recovery receipt; preserves original admission policy/request and old notification. Idempotent for the same workflow. Use retained-candidate qualification recovery instead once candidate/check/review evidence exists.",
     "inputSchema":{"type":"object","properties":{"workflow_id":{"type":"string"}},"required":["workflow_id"],"additionalProperties":false}
   },
   {
-    "name":"foreman_handoff",
-    "description":"Only after explicit human approval, take over MANAGEMENT of one named workflow and its explicit same-task descendants in this authenticated chat. Supply the exact current source_foreman and a reason. Preserves original worker/session/prompt identities, admission policy, snapshots, findings, stop/uncertainty records and old notifications. Unrelated workflows remain isolated. The previous manager retains read access but cannot mutate handed-off work. Future terminal notifications route to the new manager; prior notifications are never replayed. This is not execution, replay, qualification, integration, publication, device or budget-renewal approval. Handoff is recorded, reversible through another explicit handoff, and idempotent for the same request. Inspect with workflow_id/task_id; unscoped tools gain no other chat's authority.",
+    "name":"teem_handoff",
+    "description":"Only after explicit human approval, take over MANAGEMENT of one named workflow and its explicit same-task descendants in this authenticated chat. Supply the exact current manager's session ID and a reason. Preserves original worker/session/prompt identities, admission policy, snapshots, findings, stop/uncertainty records and old notifications. Unrelated workflows remain isolated. The previous manager retains read access but cannot mutate handed-off work. Future terminal notifications route to the new manager; prior notifications are never replayed. This is not execution, replay, qualification, integration, publication, device or budget-renewal approval. Handoff is recorded, reversible through another explicit handoff, and idempotent for the same request. Inspect with workflow_id/task_id; unscoped tools gain no other chat's authority.",
     "inputSchema":{"type":"object","properties":{"workflow_id":{"type":"string"},"source_foreman":{"type":"string"},"reason":{"type":"string","minLength":1,"maxLength":500}},"required":["workflow_id","source_foreman","reason"],"additionalProperties":false}
   },
   {
-    "name": "foreman_workflow",
-    "description": "Delegate implementation, approved checks, two independent exact-snapshot reviews and bounded revisions. Every NEW workflow requires an explicit user-authorised GitHub issue as owner/repo#positive-number; never infer it from title/prompt, publish issues automatically or bypass managed checks with legacy submission. Syntax validation is not an existence lookup or paid-work authority. Prefer assignment for scope/prompt/workers, with a short title, so default tool text stays compact; expand the tool input for full text. Legacy top-level fields remain accepted but may display long text; never mix the two forms. Use a project alias from foreman_status.projects and acceptance criteria. The supervisor chooses separate checkouts and base revisions; never ask the human for paths or hashes. No model override, arbitrary commands, commits, integration or publication. Optionally split a task into up to two workers with disjoint file scopes. Each task has its own two implementation and two review slots; additional tasks do not share them. Their combined candidate must pass checks and both reviews. Revisions use one worker on that candidate; stay within the user's authorised scope. Retain one UUID per immutable workflow, never replace uncertain work. The workflow appears automatically in passive progress. Do not call todowrite for Teem or wait/poll to update it. Finish your dispatch response so the human can keep talking. Progress and individual agent completions do not wake you. One final workflow outcome asks for a concise result summary, not checklist maintenance.",
+    "name": "teem_workflow",
+    "description": "Delegate implementation, approved checks, two independent exact-snapshot reviews and bounded revisions. Every NEW workflow requires an explicit user-authorised GitHub issue as owner/repo#positive-number; never infer it from title/prompt, publish issues automatically or bypass managed checks with legacy submission. Syntax validation is not an existence lookup or paid-work authority. Prefer assignment for scope/prompt/workers, with a short title, so default tool text stays compact; expand the tool input for full text. Legacy top-level fields remain accepted but may display long text; never mix the two forms. Use a project alias from teem_status.projects and acceptance criteria. The supervisor chooses separate checkouts and base revisions; never ask the human for paths or hashes. No model override, arbitrary commands, commits, integration or publication. Optionally split a task into up to two workers with disjoint file scopes. Each task has its own two implementation and two review slots; additional tasks do not share them. Their combined candidate must pass checks and both reviews. Revisions use one worker on that candidate; stay within the user's authorised scope. Retain one UUID per immutable workflow, never replace uncertain work. The workflow appears automatically in passive progress. Do not call todowrite for Teem or wait/poll to update it. Finish your dispatch response so the human can keep talking. Progress and individual agent completions do not wake you. One final workflow outcome asks for a concise result summary, not checklist maintenance.",
     "inputSchema": {
       "type": "object",
       "properties": {

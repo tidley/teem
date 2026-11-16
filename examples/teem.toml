@@ -7,7 +7,7 @@ enabled = false
 trusted_worker_shell = false
 state_dir = "~/.local/state/teem"
 registry = "~/.local/state/opencode/service.json"
-# Legacy task fallback only; new workers/reviewers inherit the native Foreman model.
+# Legacy task fallback only; new workers/reviewers inherit the native Teem model.
 model = "openai/gpt-6.1-sol"
 allowed_checkouts = []
 

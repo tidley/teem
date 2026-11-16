@@ -467,7 +467,7 @@ pub fn submit(s: &Store, f: &str, args: &Value) -> Result<Value> {
             return Ok(old);
         }
         let parent = s.workflow(&parent_id)?;
-        ensure!(parent["foreman"] == f, "Candidate belongs to another Foreman");
+        ensure!(parent["foreman"] == f, "Candidate belongs to another Teem coordinator");
         issue_reference(&parent["request"]["issue"])?;
         let root = parent["request"]["reconcile_root"].as_str().unwrap_or(&parent_id);
         lineage(s, root, None, true)?;

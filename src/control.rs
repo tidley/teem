@@ -57,7 +57,7 @@ pub fn request(s: &Store, f: &str, args: &Value) -> Result<Value> {
     let _guard = admission_guard(s)?;
     s.transaction(||{
         let mut w=s.workflow(&id)?;
-        ensure!(w["foreman"]==f,"Workflow does not belong to this Foreman");
+        ensure!(w["foreman"]==f,"Workflow does not belong to this Teem coordinator");
         let tasks=s.tasks(Some(f))?.into_iter().filter(|t|t["request"]["workflow_id"]==id).collect::<Vec<_>>();
         let selected=if let Some(task)=args.get("task_id") {
             let task=task.as_str().context("Use an exact task UUID")?;uuid(task)?;

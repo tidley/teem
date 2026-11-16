@@ -2,7 +2,7 @@ id = "local.teem"
 name = "Teem"
 version = "0.1.0"
 min_herdr_version = "0.9.1"
-description = "One visible Foreman with two headless workers and two reviewers"
+description = "One visible Teem coordinator with two headless workers and two reviewers"
 platforms = ["linux"]
 
 [[build]]
@@ -10,7 +10,7 @@ command = ["cargo", "run", "--locked", "--release", "--", "install-plugin"]
 
 [[actions]]
 id = "bind"
-title = "Teem: bind focused Foreman conversation"
+title = "Teem: bind focused conversation"
 contexts = ["workspace"]
 command = ["bin/teem", "bind"]
 

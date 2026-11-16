@@ -433,25 +433,10 @@ fn registration(
     owned: &Path,
 ) -> Result<String> {
     let mut d = Document::new(raw)?;
-    let mut template: Value = serde_json::from_str(include_str!("../examples/pilot-foreman.json"))?;
+    let template: Value = serde_json::from_str(include_str!("../examples/pilot-teem.json"))?;
     // Canonical global chats use authenticated native tools, not a fixed MCP owner.
-    template["agents"]["teem_foreman"]["system"] = json!(
-        template["agents"]["teem_foreman"]["system"]
-            .as_str()
-            .context("Missing shipped system prompt")?
-            .replace("teem_foreman_", "teem_")
-            .replace("foreman_", "teem_")
-            .replace("You are the Teem Foreman", "You are Teem")
-            .replace("Foreman", "Teem")
-    );
-    template["agents"]["teem_foreman"]["description"] = json!(
-        "Teem: deliver authorised tasks through managed workers, checks and independent reviews"
-    );
-    let profile = &template["agents"]["teem_foreman"];
-    ensure!(
-        profile.is_object(),
-        "Missing shipped Foreman agent template"
-    );
+    let profile = &template["agents"]["teem"];
+    ensure!(profile.is_object(), "Missing shipped Teem agent template");
     let mut root = Vec::new();
     if let Some(agents) = d.value.get("agents") {
         ensure!(agents.is_object(), "agents must be an object");

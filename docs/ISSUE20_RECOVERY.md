@@ -30,23 +30,23 @@ retries remain read-idempotent, including after policy removal.
 
 ## Original setup recovery contract
 
-`foreman_recover_qualification` reserves a linked qualification-only workflow.
+`teem_recover_qualification` reserves a linked qualification-only workflow.
 It preserves the retained candidate and parent history, and does not implement
 parent #20 or import #19/#21/#22. No source integration, installation, service
 operation, publication or additional spending authority is granted.
 
 ## Explicit admission and retries
 
-Use the original authenticated native Foreman, or an explicitly approved scoped
+Use the original authenticated native Teem coordinator, or an explicitly approved scoped
 management handoff, with the original configured project. Native task ownership
 remains unchanged. Native dispatch checks host-provided session/agent identity and the
 current project policy for new admission. An existing recovery UUID retry is a
 read: it still authenticates the caller and validates ownership and all immutable
 arguments, even if execution policy has since been removed; it cannot relaunch.
-Fixed MCP retains its existing exact Foreman binding and
+Fixed MCP retains its existing exact coordinator binding and
 same-user security limitations; that transport is not native caller authentication.
 
-Read the exact candidate through bounded `foreman_status` detail first. Retain a
+Read the exact candidate through bounded `teem_status` detail first. Retain a
 new UUID and the snapshot SHA-256, not its Git tree ID. Illustrative input only:
 
 ```json
@@ -95,7 +95,7 @@ handoff both before and after an independent source advance.
 
 Qualification recovery still refuses advanced source or changed policy. When the
 user authorises continuing the same retained implementation on current source,
-`foreman_reconcile` has a distinct **setup handoff**, not the review-only
+`teem_reconcile` has a distinct **setup handoff**, not the review-only
 `blocked_snapshot` escape hatch:
 
 ```json
@@ -134,7 +134,7 @@ read-only reviews must run afresh before `ready`; no old evidence qualifies it.
 This supports the advanced-source lifecycle shape reported for #19/#21; it does
 not inspect, recover, replay or dispatch their real records. Failed recovery
 admission IDs are not successor workflow IDs. Tool adoption, separately authorised
-#19/#21 successor dispatch and combined qualification remain Foreman-owned gates.
+#19/#21 successor dispatch and combined qualification remain Teem-owned gates.
 
 ## Fresh evidence, never a correction worker (qualification recovery)
 
@@ -170,7 +170,7 @@ controller terminal outcome **combined with its write-order contract**:
 
 - The initial round is `blocked`, unintegrated, with succeeded implementation
   provenance, no check handle/result/reviewer admission and no `resume_phase`.
-- The controller's native terminal event belongs to that exact workflow/Foreman,
+- The controller's native terminal event belongs to that exact workflow/coordinator,
   and the round has its controller-generated completion timestamp. The exact
   synchronous outcome is `No such file or directory (os error 2)`.
 - The private evidence directory contains **only** a valid complete `spec.json`

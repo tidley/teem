@@ -9,7 +9,7 @@ For a local checkout, use the same command before `herdr plugin link /absolute/c
 
 New profiles use **`agents.teem`**, whose short ID the host input title-cases as
 **Teem**. Agent data and the full system prompt come from the single shipped
-`examples/pilot-foreman.json` template. Its historical `teem_foreman` key and pilot
+`examples/pilot-teem.json` template. The historical `teem_foreman` key and pilot
 root defaults stay unchanged. The installer does **not** copy `default_agent`,
 `warming` or `experimental` globally, select a default agent/model, or change Build
 or global permissions. The shipped agent's permissions apply only to that agent.
@@ -134,7 +134,7 @@ tasks, workflows, stops and bindings; it starts no work. It is idempotent and is
 not a tool exposed to native agents. Ordinary enablement still rejects identity
 changes rather than silently migrating them.
 
-Canonical profiles use `foreman_*` native tool names derived from the shared
+Canonical profiles use `teem_*` native tool names derived from the shared
 template. Existing custom prompts remain operator-owned. Remove a legacy fixed
 MCP `--foreman` override only with approval and after preserving it; it routes all
 callers to that owner, not the currently visible chat. Future submissions should

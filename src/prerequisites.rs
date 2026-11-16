@@ -49,7 +49,7 @@ pub fn repair(s: &crate::store::Store, f: &str, args: &Value) -> Result<Value> {
     uuid(&id)?;
     s.transaction(|| {
         let mut w = s.workflow(&id)?;
-        ensure!(w["foreman"] == f,"Workflow belongs to another Foreman");
+        ensure!(w["foreman"] == f,"Workflow belongs to another Teem coordinator");
         if w["data"]["prerequisite_policy_recovery"].is_object() { return Ok(w); }
         ensure!(w["state"]=="blocked" && w["detail"]=="Project policy removed or changed; progression stopped" && w["stop"].is_null() && w["integration"].is_null() && w["request"].get("qualification_recovery").is_none(),"Only an unpaused prerequisite-only policy stop during implementation can be repaired");
         let round = array(&w["data"]["rounds"]).pop().context("No admitted implementation")?;

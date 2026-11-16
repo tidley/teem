@@ -113,7 +113,10 @@ pub(crate) fn candidate(
     successor: Option<&str>,
 ) -> Result<(Value, Value, Option<Value>)> {
     let w = s.workflow(id)?;
-    ensure!(w["foreman"] == f, "Candidate belongs to another Foreman");
+    ensure!(
+        w["foreman"] == f,
+        "Candidate belongs to another Teem coordinator"
+    );
     let stopped = w["state"] == "blocked"
         && w["stop"]["workflow_paused"] == true
         && w["stop"]["state"] == "stopped";

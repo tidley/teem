@@ -354,7 +354,7 @@ pub fn validate_execution(s: &Store, r: &dyn Runtime, foreman: &str, target: &st
     } else {
         ensure!(
             r.directory(foreman)? == target,
-            "Foreman location differs from approved project"
+            "Teem coordinator location differs from approved project"
         );
     }
     Ok(())

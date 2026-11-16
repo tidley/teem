@@ -38,7 +38,7 @@ pub fn update(s: &Store, f: &str, args: &Value) -> Result<Value> {
     );
     s.transaction(|| {
         let w = s.workflow(&id)?;
-        ensure!(w["foreman"] == f,"Result belongs to another Foreman");
+        ensure!(w["foreman"] == f,"Result belongs to another Teem coordinator");
         ensure!(FINAL.contains(&text(&w,"state").as_str()),"Do not archive active or uncertain work");
         ensure!(s.query("SELECT id FROM tasks WHERE json_extract(request,'$.workflow_id')=? AND (state NOT IN ('succeeded','failed','interrupted') OR EXISTS (SELECT 1 FROM task_stops WHERE task_stops.task_id=tasks.id AND state!='stopped'))",[&id])?.is_empty(),"Result still owns queued, active or uncertain native work");
         for round in array(&w["data"]["rounds"]) {
@@ -128,7 +128,7 @@ pub fn blocker(w: &Value) -> Value {
     let (kind, reason, action) = if detail == "Source has unfinished changes; none discarded" {
         ("source_changes",detail.to_owned(),"Finish or commit the existing work in this source checkout; preserve unrelated changes. Start a new authorised attempt only if still needed. If handled outside this attempt, archive this saved notice with a reason.".to_owned())
     } else if detail == "Project policy removed or changed; progression stopped" {
-        ("policy_changed",detail.to_owned(),"Do not replay the worker. For a prerequisite-only change during implementation, use foreman_repair_prerequisites to continue observing its existing identity. Source, check, reference-authority or other policy changes require separate reconciliation; preserve active/uncertain work.".to_owned())
+        ("policy_changed",detail.to_owned(),"Do not replay the worker. For a prerequisite-only change during implementation, use teem_repair_prerequisites to continue observing its existing identity. Source, check, reference-authority or other policy changes require separate reconciliation; preserve active/uncertain work.".to_owned())
     } else if let Some(review) = w["data"]["rounds"]
         .as_array()
         .and_then(|r| r.last())
@@ -145,7 +145,7 @@ pub fn blocker(w: &Value) -> Value {
         })
     {
         let blocked = review["verdict"] == "blocked";
-        (if blocked { "review_blocked" } else { "review_not_approved" }, if blocked {text(review,"reason")} else {text(&review["findings"][0],"message")}, "The Foreman must resolve the recorded review reason and requalify the retained candidate. Do not replay workers for a setup failure. If superseded by verified work elsewhere, archive this saved notice with a reason.".into())
+        (if blocked { "review_blocked" } else { "review_not_approved" }, if blocked {text(review,"reason")} else {text(&review["findings"][0],"message")}, "Teem must resolve the recorded review reason and requalify the retained candidate. Do not replay workers for a setup failure. If superseded by verified work elsewhere, archive this saved notice with a reason.".into())
     } else {
         ("stopped_attempt", if detail.is_empty() {"No detailed controller reason recorded".into()} else {short(detail,800)}, "Inspect the recorded task/check evidence and resolve the stated blocker. If resolved or superseded outside Teem, archive this saved notice with a reason; do not mark execution or reviews passed.".into())
     };

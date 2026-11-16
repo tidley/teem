@@ -1,0 +1,99 @@
+# Teem access and reinstall policy
+
+## Trusted development
+
+The checked-in `examples/pilot-teem.json` is the reinstallable Teem profile.
+It uses trusted Build-equivalent tool access rather than a command allowlist:
+
+```json
+[
+  { "action": "*", "resource": "*", "effect": "allow" },
+  { "action": "browser", "resource": "*", "effect": "deny" }
+]
+```
+
+Routine shell commands, local edits, external-directory reads, research tools and
+read-only review agents do not require per-command permission prompts. Managed
+implementation work still uses Teem workflows and their recorded check/review gates.
+This profile changes only the Teem coordinator. It does not replace worker or reviewer policies.
+
+## Engineering decisions by default
+
+Within an authorised task, choose the smallest correct implementation, resolve
+routine local blockers and failing tests, and continue eligible bounded corrections
+without requesting the same approval again. Brief the user on decisions,
+verification and limitations at completion or a genuine blocker. Do not turn a
+design or plan checkpoint into an approval request when the requested scope is clear.
+
+Read check failures and review findings yourself. Explain each demonstrated
+regression as its trigger and broken user-visible behaviour, not just a defect
+label. Implement clear in-scope fixes without another approval; do not ask the
+user to identify regressions or manage routine corrections. Require fresh checks
+and both independent reviews before reporting qualification. Distinguish proposed,
+implemented and verified fixes: a queued correction is not a completed fix. If
+blocked, state the exact technical or authority limit and any specific decision
+needed. These instructions do not expand scope, permissions or budgets.
+
+One authenticated Teem coordinator can coordinate an explicitly authorised task in another
+configured target project. The chat keeps its home identity and model; the target
+keeps its own source path, checks, permissions and review gates. Reconciliation
+retains the original task owner and target project. The chat still needs a valid
+home policy; this does not authorise arbitrary paths, new issues, paid work,
+read-only reference edits, unbounded retries or uncertain-task replay.
+
+New worker prompts carry the same in-scope decision/reporting default. Existing
+sessions and saved prompts are not rewritten. No permission or budget is raised.
+
+Routine inspection includes:
+
+- Git status and remote refs (`git status`, `git ls-remote`).
+- Repository metadata and open PRs (`gh repo view`, `gh pr list`).
+- PR details, reviews and checks (`gh pr view`, `gh pr checks`).
+- Commit history and whitespace checks (`git log`, `git diff --check`).
+- Read-only CI/release inspection (`gh run list/view`, `gh release list/view`).
+- Help/version inspection, including `ngit --help`.
+
+Prefer ordinary read-only GitHub CLI commands over raw API calls. Do not mistake
+these examples for safe wildcard grants to a restricted agent: Git inspection flags
+can write files or invoke helpers. The trusted profile deliberately grants broad
+host-user access instead of claiming to classify every possible command as safe.
+
+## Approval still means approval
+
+Integration and local commits need their respective explicit user authority.
+Pushes, PR/issue creation, merges, tags/releases, installation, deployment and
+destructive cleanup require explicit user authorisation for their intended scope.
+Approval for one push or PR is not standing publication authority. Do not recommend
+permanent `git push *` or `gh pr create *` approval to replace that decision.
+Reuse approval already given for that exact scope; a new workflow phase or outcome
+notification is not a reason to request the same decision again. The notification
+itself grants no authority. Use native integration for a qualified candidate, not
+shell/API state edits. Fresh checks/reviews and all source/uncertainty gates remain.
+
+These are behavioural approval rules, not shell-enforced barriers. Commands can
+act with the host user's filesystem, process and network authority. Protect private
+data and credentials; preserve unrelated work. Do not claim an OS sandbox. Change
+permissions or MCP configuration only when the user explicitly requests it. Native
+permission cards remain human-only; tool access does not authorise answering them.
+
+## Reinstalling
+
+Keep both the permissions and the `system` instructions from the tracked profile.
+Do not rely on this conversation, saved project grants or a machine-local permission
+exception. On a fresh setup, use `examples/pilot-teem.json` as the project profile.
+When updating an existing profile, merge only `agents.teem.permissions` and
+`agents.teem.system`; preserve its color, model, MCP command, exact coordinator
+binding and other local settings. Do not copy one machine's session IDs or credentials.
+
+For a retained legacy binding, update only its already-bound profile entry;
+do not rename, hide or rebind it as part of a wording change. See
+[retained naming contracts](NAMING_COMPATIBILITY.md).
+
+OpenCode reloads configuration after a save. Check the effective `teem` agent
+in the intended project location and inspect any session-specific permissions, which
+can override the agent rules. No service restart or paid task is needed to load or
+inspect this policy. Installing Teem does not silently overwrite an existing profile.
+
+A reinstall from a remote source needs the commit containing this profile. Unpublished
+local edits are not included in a GitHub installation. This policy is not permission
+to publish those edits, merge them, or change worker/reviewer sessions.

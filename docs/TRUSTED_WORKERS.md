@@ -9,7 +9,7 @@ trusted_worker_shell = true
 
 The default is `false`. Only worker shell permission changes from `ask` to `allow`.
 The setting is recorded with the inherited model before the first native dispatch.
-Reviewer and Foreman permissions do not change through this setting. Other tool
+Reviewer and coordinator permissions do not change through this setting. Other tool
 permissions and external-directory rules do not change.
 
 Shell commands have the host user's filesystem, process and network authority.
@@ -26,5 +26,5 @@ to adopt this mode. Pending requests remain human-controlled.
 
 To turn this mode off for new workers, set `trusted_worker_shell = false`. This does
 not revoke permissions from recorded sessions or cancel already admitted commands.
-The separate [trusted Foreman profile](FOREMAN_ACCESS.md) is not controlled by this
+The separate [trusted Teem profile](TEEM_ACCESS.md) is not controlled by this
 worker setting.

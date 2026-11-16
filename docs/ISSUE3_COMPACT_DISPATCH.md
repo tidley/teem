@@ -2,7 +2,7 @@
 
 ## Source contract
 
-New `foreman_workflow` and `foreman_submit` calls should put their long inputs
+New `teem_workflow` and `teem_submit` calls should put their long inputs
 inside an `assignment` object. The tool schemas advertise both compact and legacy
 forms. They are alternatives, not mergeable fragments: supplying **any** assignment
 field at top level alongside `assignment` is an error, even if values agree.
@@ -61,7 +61,7 @@ checks. The canonical stored request is the same as an equivalent legacy call:
 full prompt bytes, revision, scope and worker assignments are preserved. Equal
 retries may switch forms using the **same** UUID; changing immutable request
 values remains an error. Never replace a UUID after an uncertain response.
-Full canonical inputs remain retrievable through `foreman_status` detail mode
+Full canonical inputs remain retrievable through `teem_status` detail mode
 with the exact task/workflow UUID and `pointer: "/request"`; follow `next_offset`
 and retain the same SHA-256 across chunks. Existing records are not rewritten.
 

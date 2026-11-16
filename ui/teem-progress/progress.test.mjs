@@ -170,7 +170,7 @@ test('optional enablement reports an unregistered chat without an empty project 
 
 test('native tool registration uses trusted invocation context not tool input, and disposes', async () => {
   const f = enableContext()
-  const definitions = [{ name: 'foreman_status', description: 'Inspect evidence', inputSchema: { type: 'object' } }]
+  const definitions = [{ name: 'teem_status', description: 'Inspect evidence', inputSchema: { type: 'object' } }]
   let tool
   let disposed = false
   const calls = []
@@ -184,7 +184,7 @@ test('native tool registration uses trusted invocation context not tool input, a
   const signal = new AbortController().signal
   const input = { sessionID: 'ses_forged', agent: 'forged' }
   expect(await tool.execute(input, { sessionID: 'ses_trusted', agent: 'build', signal })).toEqual({ content: '{\n  "counts": {}\n}' })
-  expect(calls[1]).toEqual([f.context.options, 'native-call', { name: 'foreman_status', arguments: input, sessionID: 'ses_trusted', agent: 'build' }, signal])
+  expect(calls[1]).toEqual([f.context.options, 'native-call', { name: 'teem_status', arguments: input, sessionID: 'ses_trusted', agent: 'build' }, signal])
   await dispose()
   expect(disposed).toBe(true)
   await expect(installNativeTools(f.context, async () => ({}))).rejects.toThrow('catalog unavailable')

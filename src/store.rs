@@ -113,7 +113,7 @@ impl Store {
             ensure!(
                 old.first().is_none_or(|r| r["terminal_id"] == terminal
                     || r["terminal_id"] == format!("native-session:{foreman}")),
-                "Foreman terminal changed; inspect binding before replacing it"
+                "Teem coordinator terminal changed; inspect binding before replacing it"
             );
             self.exec(
                 "INSERT OR IGNORE INTO foremen (id, terminal_id) VALUES (?,?)",
@@ -130,7 +130,7 @@ impl Store {
         self.query("SELECT * FROM foremen WHERE id=?", [foreman])?
             .into_iter()
             .next()
-            .context("Register this Foreman explicitly before delegation")
+            .context("Register this Teem coordinator explicitly before delegation")
     }
     fn decode_task(mut v: Value) -> Result<Value> {
         v["request"] = serde_json::from_str(
@@ -402,7 +402,7 @@ impl Store {
                     params![id, f]
                 )?
                 .is_empty(),
-            "Event does not belong to this Foreman"
+            "Event does not belong to this Teem coordinator"
         );
         self.exec("UPDATE events SET acked=1 WHERE id=?", [id])?;
         Ok(())

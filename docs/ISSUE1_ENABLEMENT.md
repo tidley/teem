@@ -41,7 +41,7 @@ canonical path matches. It does not change the chat's agent or permissions.
 
 These are setup instructions, not configuration changes performed by this patch.
 No new location-global MCP binding should be generated: that would route other
-chats through the wrong Foreman. Existing fixed MCP remains independently bound
+chats through the wrong Teem coordinator. Existing fixed MCP remains independently bound
 legacy compatibility, not authenticated native chat context.
 
 ## Behavior and boundaries
@@ -59,13 +59,13 @@ navigation while awaiting session sync or the bridge response.
 
 Native tools receive session/agent from the trusted ToolContext, never from model
 arguments. Each call rereads native identity and preserves any explicit receipt. The
-native catalog omits `foreman_submit`, and native calls reject it. New managed
+native catalog omits `teem_submit`, and native calls reject it. New managed
 workflows require exactly one home policy matching the current chat directory.
 The explicitly authorised target may be another configured project alias; its
 policy controls source, checks and access. Missing or ambiguous home policy blocks
 delegation with a setup error, not a request to repeat `/teem enable` or open another
 chat. Reconciliation retains the source workflow's project and verifies its owner;
-it cannot switch issues or borrow another Foreman's candidate. Rejected calls
+it cannot switch issues or borrow another Teem coordinator's candidate. Rejected calls
 create no workflows/tasks. Harmless retained-evidence inspection is not restricted
 to the home project. Existing issue, stop, activity, candidate, budget, check and
 review gates are unchanged.

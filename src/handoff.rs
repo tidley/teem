@@ -72,7 +72,7 @@ pub fn authorize(s: &Store, f: &str, w: &Value, read_only: bool) -> Result<Strin
     let manager = manager(s, w)?;
     ensure!(
         manager == f || (read_only && can_read(s, f, w)?),
-        "Workflow is managed by another Foreman ({manager}); use an explicitly user-approved foreman_handoff for this workflow, not task replay"
+        "Workflow is managed by another Teem coordinator ({manager}); use an explicitly user-approved teem_handoff for this workflow, not task replay"
     );
     Ok(text(w, "foreman"))
 }
@@ -147,7 +147,10 @@ pub fn caller(s: &Store, f: &str, name: &str, args: &Value) -> Result<String> {
                 let w = s.workflow(&text(e, "workflow_id"))?;
                 authorize(s, f, &w, false)?;
             } else {
-                ensure!(e["foreman"] == f, "Event belongs to another Foreman");
+                ensure!(
+                    e["foreman"] == f,
+                    "Event belongs to another Teem coordinator"
+                );
             }
             return Ok(text(e, "foreman"));
         }

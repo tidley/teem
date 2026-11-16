@@ -910,21 +910,21 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
     }
     assert_eq!(manifest["panes"].as_array().unwrap().len(), 1);
     assert_eq!(manifest["panes"][0]["placement"].as_str(), Some("popup"));
-    let profile = read_json(&root.join("examples/pilot-foreman.json")).unwrap();
-    assert_eq!(profile["default_agent"], "teem_foreman");
+    let profile = read_json(&root.join("examples/pilot-teem.json")).unwrap();
+    assert_eq!(profile["default_agent"], "teem");
     assert_eq!(profile["warming"], false);
     assert!(
-        profile["agents"]["teem_foreman"].get("steps").is_none(),
-        "Do not cut off the Foreman before it can finish research and dispatch"
+        profile["agents"]["teem"].get("steps").is_none(),
+        "Do not cut off Teem before it can finish research and dispatch"
     );
-    assert!(profile["agents"]["teem_foreman"].get("maxSteps").is_none());
-    let instruction = text(&profile["agents"]["teem_foreman"], "system");
+    assert!(profile["agents"]["teem"].get("maxSteps").is_none());
+    let instruction = text(&profile["agents"]["teem"], "system");
     for rule in [
         "Each distinct user task or issue gets its own workflow",
         "dedicated implementation worker",
         "do not bundle issues because files overlap",
         "explicit stop/handoff approval",
-        "teem_foreman_reconcile",
+        "teem_reconcile",
         "Local commits require local-commit authority",
         "Continue only already-authorised work",
         "trusted Build-equivalent tool access",
@@ -939,11 +939,11 @@ fn coordinator_profile_and_manifest_keep_native_entrypoints_and_no_worker_panes(
         );
     }
     assert_eq!(
-        profile["agents"]["teem_foreman"]["permissions"],
+        profile["agents"]["teem"]["permissions"],
         json!([
             {"action":"*","resource":"*","effect":"allow"},
             {"action":"browser","resource":"*","effect":"deny"}
         ]),
-        "Foreman matches trusted Build access; avoid restoring per-command or directory gates"
+        "Teem matches trusted Build access; avoid restoring per-command or directory gates"
     );
 }

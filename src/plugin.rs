@@ -82,12 +82,7 @@ pub fn open(c: &Value) -> Result<Store> {
     Ok(store)
 }
 pub fn tools() -> Value {
-    serde_json::from_str(
-        &include_str!("tools.json")
-            .replace("foreman_", "teem_")
-            .replace("Foreman", "Teem"),
-    )
-    .unwrap()
+    serde_json::from_str(include_str!("tools.json")).unwrap()
 }
 /// Keep retained callers compatible without advertising the old tool prefix.
 pub fn legacy_tool_name(name: &str) -> String {
@@ -327,7 +322,7 @@ pub fn bind(s: &Store) -> Result<Value> {
 }
 pub fn serve(path: &Path, initial: &Value) -> Result<()> {
     if initial["enabled"] != true {
-        println!("Foreman supervision is disabled");
+        println!("Teem supervision is disabled");
         return Ok(());
     }
     let mut s = open(initial)?;
@@ -372,7 +367,7 @@ pub fn serve(path: &Path, initial: &Value) -> Result<()> {
             Ok(())
         })();
         if cycle.is_err() {
-            eprintln!("Foreman runtime unavailable. Reservations retained");
+            eprintln!("Teem runtime unavailable. Reservations retained");
         }
         for _ in 0..20 {
             if stop.load(Ordering::Relaxed) {
@@ -485,7 +480,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
         _ => {}
     }
     if command == "service-start" && !config.exists() {
-        println!("Foreman is not configured. No service was started");
+        println!("Teem is not configured. No service was started");
         return Ok(());
     }
     ensure!(
@@ -532,7 +527,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
     }
     if command == "service-start" {
         if c["enabled"] != true {
-            println!("Foreman supervision is disabled");
+            println!("Teem supervision is disabled");
         } else {
             ensure!(
                 Command::new("systemctl")

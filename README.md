@@ -4,12 +4,12 @@ Current tools use the `teem_*` prefix, including `teem_status` and `teem_workflo
 Legacy `foreman_*` calls remain accepted for retained sessions but are not advertised.
 Existing transcripts and native task identities remain unchanged.
 
-A local [Herdr](https://github.com/herdrdev/herdr) plugin with one visible Foreman and up to two workers plus two reviewers per managed task.
+A local [Herdr](https://github.com/herdrdev/herdr) plugin with one visible Teem coordinator and up to two workers plus two reviewers per managed task.
 The supervisor is a native [Rust](https://github.com/rust-lang/rust) executable, not another agent.
 The [OpenCode](https://github.com/anomalyco/opencode) TUI adapter uses the host's [TypeScript](https://github.com/microsoft/TypeScript) interface.
 
 ```text
-Herdr ↔ Foreman ↔ Teem supervisor ↔ Workers/reviewers
+Herdr ↔ Teem coordinator ↔ Teem supervisor ↔ Workers/reviewers
            ↕
      Codr/White Noise — optional
 ```
@@ -40,13 +40,13 @@ broken behaviour, decisions, verification and remaining limitations, rather than
 asking the user to diagnose regressions. Proposed, implemented and verified fixes
 are reported separately.
 
-The Foreman instructions separate outcome, authority, execution, evidence and
+The Teem instructions separate outcome, authority, execution, evidence and
 reporting. Native chats can coordinate authorised work in another configured
 project without moving or rebinding the chat; each target retains its own policy.
 Native candidate qualification requires approved checks and two independent
 exact-candidate reviews. An explicit human review waiver is recorded as waived,
 never as passed qualification. For separately authorised version/changelog-only
-commits, the Foreman can transfer and verify only that metadata diff and use
+commits, Teem can transfer and verify only that metadata diff and use
 ordinary scoped Git operations without changing a retained Teem candidate or its
 blocked history. A local-commit-only instruction prohibits pushing/publication.
 Integration, local commits, publication, deployment and destructive actions still
@@ -56,7 +56,7 @@ not replayed, and budgets are not silently renewed.
 
 Fresh installations use these defaults. Upgrades preserve existing customised
 profiles; adopt updated instructions explicitly as described in
-[Foreman access and reinstall policy](docs/FOREMAN_ACCESS.md).
+[Teem access and reinstall policy](docs/TEEM_ACCESS.md).
 See [the changelog](CHANGELOG.md) for source changes and qualification limits.
 
 The composer shows a single-line `Teem result · /teem-result` hint, with explicit
@@ -66,7 +66,7 @@ scrollable view includes worker-reported changes and limitations, named check
 results, both recorded review verdicts and findings, and local integration status.
 Worker prose is labelled as a claim, not independent verification. Publication
 and deployment remain **not checked**: a local integration commit proves neither.
-Missing evidence and shortened excerpts are explicit; `foreman_status` retains
+Missing evidence and shortened excerpts are explicit; `teem_status` retains
 the full reports and logs. Opening the view makes no model call, acknowledges no
 event and starts no work. Older projections keep their original compact receipt
 until the updated native supervisor publishes richer evidence.
@@ -87,7 +87,7 @@ The default limit remains three automatic code-correction attempts, not a user
 money/token budget. Genuine source findings still follow the bounded correction flow.
 
 After an explicitly authorised prerequisite repair, use
-`foreman_recover_qualification` with `recovery_id`, `source_workflow_id` and
+`teem_recover_qualification` with `recovery_id`, `source_workflow_id` and
 `review_snapshot` (instead of `expected_snapshot`). This preserves the parent,
 requires verified passing check evidence and two completed valid prior verdicts,
 and runs fresh checks plus two new reviews against the unchanged retained snapshot.
@@ -109,7 +109,7 @@ a firmware defect or a request for the user to diagnose it.
 - `herdr-plugin.toml`: installation build, explicit Teem actions, and transient status popup.
 - `src/plugin.rs`: [Herdr](https://github.com/herdrdev/herdr) commands, fixed-binding [MCP](https://github.com/modelcontextprotocol/modelcontextprotocol) tools, and service unit output.
 - `src/enable.rs`: explicit native chat receipts, per-call authority and model capture.
-- `src/operator.rs`: explicit candidate integration, verified commit receipts and bounded Foreman color updates.
+- `src/operator.rs`: explicit candidate integration, verified commit receipts and bounded Teem color updates.
 - `src/control.rs`: durable user stop requests, native interruption and preserved handoff state.
 - `src/store.rs`: [SQLite](https://sqlite.org/src/) tasks, per-task 2+2 limits, and exclusive checkout ownership.
 - `src/status.rs`: bounded readable status, authoritative counts and paginated evidence retrieval.
@@ -168,31 +168,31 @@ The legacy task API uses separate authorised checkouts. Workers may be sparse; l
 Managed workflows choose their own base and prepare separate complete clones from a configured source project.
 They run approved checks and review the exact uncommitted patch/tree snapshot without creating source commits.
 The supervisor never automatically integrates, merges, pushes, deploys or replays uncertain tasks.
-After user approval, `foreman_integrate` can apply an exact verified candidate to
+After user approval, `teem_integrate` can apply an exact verified candidate to
 its original clean source, or verify and record its integration commit. With
 explicit local-commit authority, `commit_local=true` records the exact candidate
 locally. It never publishes. Shared status and the sidebar show integration receipts.
-The Foreman profile uses trusted Build-equivalent tool access without routine
+The Teem profile uses trusted Build-equivalent tool access without routine
 shell or directory prompts. Publication, integration and destructive operations
 still need user authorisation through instructions, not tool-level barriers.
-See [Foreman access and reinstall policy](docs/FOREMAN_ACCESS.md). `foreman_color`
+See [Teem access and reinstall policy](docs/TEEM_ACCESS.md). `teem_color`
 changes only its local accent without needing shell access.
-The Foreman assigns a separate workflow and at least one dedicated worker to
+Teem assigns a separate workflow and at least one dedicated worker to
 each distinct task or issue; independent tasks may run in parallel. After user
-approval, `foreman_stop` pauses a workflow and stops its selected native agents
+approval, `teem_stop` pauses a workflow and stops its selected native agents
 without discarding their changes or automatically launching replacements.
 Code permissions are not an operating-system sandbox. Existing phone admission and desktop draft races remain unqualified.
 The historical pilot's project-local profile remains compatible but is not needed
 for new global installations. Existing bound chats are not migrated to `teem`.
-Completion admission is not Foreman consumption. Uncertain delivery is reconciled by exact native message ID, never automatic resend.
+Completion admission is not coordinator consumption. Uncertain delivery is reconciled by exact native message ID, never automatic resend.
 Older notification records remain marked `legacy-codr` for manual inspection, without replay.
-New workers and reviewers inherit Foreman's selected model at dispatch; the selection
+New workers and reviewers inherit the Teem coordinator's selected model at dispatch; the selection
 is recorded per run. The passive TUI reads supervisor progress and agent-reported todos
-without waking Foreman. It shows current work; completed results remain in status history.
+without waking the coordinator. It shows current work; completed results remain in status history.
 Individual agent completion receipts do not trigger model turns. One final workflow
-outcome asks Foreman for a concise result summary. The sidebar retains the latest
+outcome asks Teem for a concise result summary. The sidebar retains the latest
 result separately from active todos, so completion cannot look like cancellation.
-`foreman_status` defaults to a bounded summary, not full prompts/history. It reports
+`teem_status` defaults to a bounded summary, not full prompts/history. It reports
 worker/reviewer state counts, candidate check/review evidence and later integration
 receipts. Explicit detail chunks retain access to full history and verified check
 output without granting access to an external tool-output directory. See
@@ -204,4 +204,7 @@ integrated project or release. Untrusted check scripts require stronger isolatio
 than this same-user local MVP supplies. Paid end-to-end runs still need qualification.
 
 Plugin ID: `local.teem`. Optional user service: `teem.service`.
-Internal `foreman_*` tool names and native task identifiers remain stable from the prototype.
+Legacy `foreman_*` aliases and native task identifiers remain stable from the prototype.
+New profiles use `examples/pilot-teem.json`; the old prototype profile and stored
+identities are compatibility records, not current naming. See
+[retained naming contracts](docs/NAMING_COMPATIBILITY.md) for the explicit exceptions.

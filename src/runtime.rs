@@ -267,7 +267,7 @@ pub trait Runtime {
                 && s["location"]["directory"]
                     .as_str()
                     .is_some_and(|p| Path::new(p).is_absolute()),
-            "Exact native Foreman location unavailable"
+            "Exact native Teem coordinator location unavailable"
         );
         Ok(absolute(Path::new(&text(&s["location"], "directory")))?
             .to_string_lossy()
@@ -275,7 +275,7 @@ pub trait Runtime {
     }
     fn dispatch_model(&self, t: &Value) -> Result<Value> {
         let s = self.request("GET", &format!("/api/session/{}", text(t, "foreman")), None)?;
-        ensure!(s["id"] == t["foreman"], "Foreman session mismatch");
+        ensure!(s["id"] == t["foreman"], "Teem coordinator session mismatch");
         model(&s["model"])
     }
     fn create(&self, t: &Value) -> Result<()> {
@@ -336,7 +336,7 @@ pub trait Runtime {
             let permissions = self.request("GET", &format!("{prefix}/permission"), None)?;
             let forms = self.request("GET", &format!("{prefix}/form"), None)?;
             return Ok(
-                json!({"state":"running","detail":if !array(&permissions).is_empty()||!array(&forms).is_empty(){"Requires human permission or answer. Check Foreman approval cards and approval status; inspect the native worker session for other questions"}else{"Native execution active"}}),
+                json!({"state":"running","detail":if !array(&permissions).is_empty()||!array(&forms).is_empty(){"Requires human permission or answer. Check Teem approval cards and approval status; inspect the native worker session for other questions"}else{"Native execution active"}}),
             );
         }
         let idle = session["time"]["idle"].as_f64().unwrap_or(0.0);

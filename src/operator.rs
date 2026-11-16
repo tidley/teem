@@ -121,7 +121,7 @@ pub fn integrate(s: &Store, f: &str, args: &Value) -> Result<Value> {
     let w = s.workflow(&id)?;
     ensure!(
         w["foreman"] == f,
-        "Workflow does not belong to this Foreman"
+        "Workflow does not belong to this Teem coordinator"
     );
     let root = source(s, &w)?;
     let lock = open_lock(&s.directory.join("integration.lock"))?;
@@ -304,13 +304,13 @@ pub fn color(s: &Store, f: &str, args: &Value) -> Result<Value> {
     let cmd = array(&config["mcp"]["servers"]["teem"]["command"]);
     ensure!(
         cmd.windows(2).any(|a| a[0] == "--foreman" && a[1] == f),
-        "Project profile belongs to another Foreman"
+        "Project profile belongs to another Teem coordinator"
     );
     ensure!(
         config["agents"]["teem_foreman"].is_object(),
-        "Foreman profile is missing"
+        "Teem coordinator profile is missing"
     );
     config["agents"]["teem_foreman"]["color"] = json!(color);
     atomic_json(&path, &config)?;
-    Ok(json!({"project":project,"color":color,"scope":"local Foreman profile only"}))
+    Ok(json!({"project":project,"color":color,"scope":"local Teem profile only"}))
 }

@@ -415,7 +415,7 @@ fn cross_project_admission_rejects_missing_target_checks_and_foreign_ownership()
             f.call(tool, &args)
                 .unwrap_err()
                 .to_string()
-                .contains("another Foreman")
+                .contains("another Teem coordinator")
         );
     }
     let before = f.store.query("SELECT * FROM workflows", []).unwrap();

@@ -2,7 +2,7 @@
 use serde_json::{Value, json};
 
 fn profile() -> Value {
-    serde_json::from_str(include_str!("../examples/pilot-foreman.json")).unwrap()
+    serde_json::from_str(include_str!("../examples/pilot-teem.json")).unwrap()
 }
 
 fn assert_guidance(instruction: &str, rules: &[&str]) {
@@ -14,16 +14,14 @@ fn assert_guidance(instruction: &str, rules: &[&str]) {
 #[test]
 fn requested_status_tables_keep_evidence_unknowns_and_input_requirements() {
     let profile = profile();
-    let instruction = profile["agents"]["teem_foreman"]["system"]
-        .as_str()
-        .unwrap();
+    let instruction = profile["agents"]["teem"]["system"].as_str().unwrap();
     assert_guidance(
         instruction,
         &[
             "For user-requested issue/task status overviews, generally use a concise Markdown table",
             "Issue/task, Current status, Agent working, Complete, Blocked",
             "Awaiting user input when pertinent",
-            "authoritative current foreman_status evidence and later integration receipts",
+            "authoritative current teem_status evidence and later integration receipts",
             "not stale candidate outcomes or agent-reported todos",
             "running, queued, none and unknown",
             "starting/accepted/uncertain or active reserved slots do not prove running",
@@ -47,9 +45,7 @@ fn requested_status_tables_keep_evidence_unknowns_and_input_requirements() {
 #[test]
 fn reporting_preserves_outcome_ack_and_existing_safety_guidance() {
     let profile = profile();
-    let instruction = profile["agents"]["teem_foreman"]["system"]
-        .as_str()
-        .unwrap();
+    let instruction = profile["agents"]["teem"]["system"].as_str().unwrap();
     assert_guidance(
         instruction,
         &[
@@ -85,10 +81,10 @@ fn reporting_preserves_outcome_ack_and_existing_safety_guidance() {
 #[test]
 fn tracked_profile_keeps_settings_and_uses_trusted_build_permissions() {
     let profile = profile();
-    assert_eq!(profile["default_agent"], "teem_foreman");
+    assert_eq!(profile["default_agent"], "teem");
     assert_eq!(profile["warming"], false);
     assert_eq!(profile["experimental"]["todo"], true);
-    let agent = &profile["agents"]["teem_foreman"];
+    let agent = &profile["agents"]["teem"];
     assert_eq!(agent["mode"], "primary");
     assert_eq!(agent["color"], "#C9956B");
     assert_eq!(
