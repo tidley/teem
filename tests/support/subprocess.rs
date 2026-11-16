@@ -39,6 +39,9 @@ fn main() {
         Some("agent") if args == ["agent", "get", "issue1-pane"] => {
             println!("{}", std::env::var("TEEM_FIXTURE_HERDR_RESULT").unwrap());
         }
+        Some("pane") if args == ["pane", "list"] => {
+            println!("{}", std::env::var("TEEM_FIXTURE_HERDR_ROSTER").unwrap());
+        }
         _ => std::process::exit(2),
     }
 }

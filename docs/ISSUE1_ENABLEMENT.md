@@ -8,14 +8,37 @@ are rejected. Load the server plugin globally to cover all project locations.
 
 First use records native-chat provenance and creates a session bookkeeping binding
 (`native-session:SESSION_ID`) if none exists. This marker is not a fabricated Herdr terminal. Real terminal
-bindings and explicit model receipts are preserved. Optional enablement can replace
-only that marker with the exact verified Herdr terminal. It never replaces a real
-terminal binding.
+bindings and explicit model receipts are preserved. Initial enablement can replace
+that marker with the exact verified Herdr terminal. A stale real terminal needs
+the guarded explicit refresh described below; ordinary tool calls never repair it.
 
 In the intended top-level OpenCode chat inside Herdr, select the model and run
 `/teem enable`. The command records that exact native chat, agent, project ID,
 directory, Herdr terminal and, when configured, the managed-project alias whose
 canonical path matches. It does not change the chat's agent or permissions.
+
+## Restored panes and explicit refresh
+
+Herdr restoration can give the same native chat a new terminal ID. Selecting Teem
+can also leave a receipt captured earlier under `build` or the legacy agent name.
+In that exact chat, `/teem enable` can refresh the receipt when:
+
+- Native session ID, top-level status, project ID, directory and project policy
+  still match. The previous receipt and stored terminal binding agree.
+- A fresh trusted Herdr roster shows exactly one pane for this native chat,
+  matching the current pane and terminal. A replaced terminal is absent from the
+  roster; a still-live old pane requires an explicit handoff instead.
+- The agent is unchanged, or the user has selected `teem` from `build` or the
+  retained legacy profile. Other agent changes remain rejected.
+- Herdr identity stays stable across roster inspection and the native identity
+  and model are rechecked before writing.
+
+The old and new receipts are retained in `chat_enablement_refreshes`. Updates are
+atomic and repeating a successful enable creates no additional refresh record.
+This changes no permissions, task/session/prompt IDs, workflow ownership, policy,
+review history or execution state; it starts no work and replays no input.
+Changing project/directory, inconsistent bindings, unavailable rosters and multiple
+live views fail closed. An agent or stale-terminal mismatch is not a code-check failure.
 
 ## Operator prerequisites
 

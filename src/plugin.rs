@@ -304,6 +304,35 @@ fn focused_agent() -> Result<Value> {
     );
     Ok(serde_json::from_slice(&out.stdout)?)
 }
+fn enable_context(s: &Store, request: &Value) -> Result<Value> {
+    let mut context = focused_agent()?;
+    let old = s.query(
+        "SELECT * FROM chat_enablements WHERE foreman=?",
+        [text(request, "sessionID")],
+    )?;
+    if old.first().is_some_and(|old| {
+        old["terminal_id"] != context["result"]["agent"]["terminal_id"]
+            || old["agent"] != request["agent"]
+    }) {
+        let out = Command::new(std::env::var_os("HERDR_BIN_PATH").unwrap_or("herdr".into()))
+            .args(["pane", "list"])
+            .output()?;
+        ensure!(
+            out.status.success() && out.stdout.len() <= 1048576,
+            "Cannot inspect current Herdr pane roster; refresh refused"
+        );
+        let roster: Value = serde_json::from_slice(&out.stdout)?;
+        context["result"]["agents"] = roster["result"]["panes"].clone();
+        let after = focused_agent()?;
+        for field in ["agent", "agent_session", "terminal_id"] {
+            ensure!(
+                after["result"]["agent"][field] == context["result"]["agent"][field],
+                "Herdr pane changed during enablement refresh"
+            );
+        }
+    }
+    Ok(context)
+}
 pub fn bind(s: &Store) -> Result<Value> {
     let response = focused_agent()?;
     let a = &response["result"]["agent"];
@@ -552,7 +581,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             let result = if command == "migrate-chat-agent" {
                 crate::enable::migrate_agent(&s, &runtime, &request)?
             } else if command == "enable-chat" {
-                crate::enable::enable(&s, &runtime, &request, &focused_agent()?)?
+                crate::enable::enable(&s, &runtime, &request, &enable_context(&s, &request)?)?
             } else {
                 crate::enable::call(&s, &runtime, &request)?
             };

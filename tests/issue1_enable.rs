@@ -13,6 +13,143 @@ use teem::{
 
 const CHAT: &str = "ses_issue1";
 
+fn restored_context(f: &Fixture) -> (Value, Value) {
+    f.native.session.borrow_mut()["agent"] = json!("teem");
+    let mut request = f.request();
+    request["agent"] = json!("teem");
+    let mut herdr = f.herdr();
+    herdr["result"]["agent"]["terminal_id"] = json!("terminal_restored");
+    herdr["result"]["agents"] = json!([herdr["result"]["agent"].clone()]);
+    (request, herdr)
+}
+
+#[test]
+fn explicit_enable_refreshes_retired_terminal_and_selected_teem_without_dispatch() {
+    let f = Fixture::new();
+    f.enable();
+    let original = f.store.query("SELECT * FROM chat_enablements", []).unwrap()[0].clone();
+    f.store.bind("ses_unrelated", "terminal_other").unwrap();
+    let unrelated = f.store.binding("ses_unrelated").unwrap();
+    let (request, herdr) = restored_context(&f);
+    let result = enable::enable(&f.store, &f.native, &request, &herdr).unwrap();
+    assert_eq!(result["started"], false);
+    let receipt = enable::authority(&f.store, &f.native, CHAT, "teem").unwrap();
+    assert_eq!(receipt["terminal_id"], "terminal_restored");
+    assert_eq!(receipt["agent"], "teem");
+    assert_eq!(receipt["project_id"], original["project_id"]);
+    assert_eq!(receipt["directory"], original["directory"]);
+    assert_eq!(f.store.binding("ses_unrelated").unwrap(), unrelated);
+    assert_eq!(
+        f.store
+            .query("SELECT * FROM chat_enablement_refreshes", [])
+            .unwrap()
+            .len(),
+        1
+    );
+    enable::enable(&f.store, &f.native, &request, &herdr).unwrap();
+    assert_eq!(
+        f.store
+            .query("SELECT * FROM chat_enablement_refreshes", [])
+            .unwrap()
+            .len(),
+        1
+    );
+    for table in ["tasks", "workflows", "events", "approvals"] {
+        assert!(
+            f.store
+                .query(&format!("SELECT * FROM {table}"), [])
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn enable_refresh_rejects_live_old_terminals_incomplete_rosters_and_identity_drift() {
+    for scenario in [
+        "live_old",
+        "live_old_plain",
+        "missing_roster",
+        "malformed_roster",
+        "duplicate_chat",
+        "wrong_current",
+        "directory",
+        "projectID",
+        "agent",
+        "parentID",
+        "inconsistent_binding",
+    ] {
+        let f = Fixture::new();
+        f.enable();
+        let (mut request, mut herdr) = restored_context(&f);
+        match scenario {
+            "live_old" => herdr["result"]["agents"]
+                .as_array_mut()
+                .unwrap()
+                .push(f.herdr()["result"]["agent"].clone()),
+            "live_old_plain" => herdr["result"]["agents"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"terminal_id":"terminal_a"})),
+            "missing_roster" => {
+                herdr["result"].as_object_mut().unwrap().remove("agents");
+            }
+            "malformed_roster" => herdr["result"]["agents"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({})),
+            "duplicate_chat" => {
+                let mut other = herdr["result"]["agent"].clone();
+                other["terminal_id"] = json!("another_live_view");
+                herdr["result"]["agents"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(other);
+            }
+            "wrong_current" => {
+                herdr["result"]["agents"][0]["agent_session"]["value"] = json!("ses_other")
+            }
+            "directory" => {
+                let other = f.directory.path().join("b");
+                request["directory"] = json!(other);
+                f.native.session.borrow_mut()["location"]["directory"] = json!(other);
+            }
+            "agent" => {
+                request["agent"] = json!("plan");
+                f.native.session.borrow_mut()["agent"] = json!("plan");
+            }
+            "inconsistent_binding" => {
+                f.store
+                    .exec(
+                        "UPDATE foremen SET terminal_id='unverified_change' WHERE id=?",
+                        [CHAT],
+                    )
+                    .unwrap();
+            }
+            field => {
+                request[field] = json!("different");
+                f.native.session.borrow_mut()[field] = json!("different");
+            }
+        }
+        let before = f.store.query("SELECT * FROM chat_enablements", []).unwrap();
+        let binding = f.store.binding(CHAT).unwrap();
+        assert!(
+            enable::enable(&f.store, &f.native, &request, &herdr).is_err(),
+            "accepted {scenario}"
+        );
+        assert_eq!(
+            f.store.query("SELECT * FROM chat_enablements", []).unwrap(),
+            before,
+            "changed receipt {scenario}"
+        );
+        assert_eq!(
+            f.store.binding(CHAT).unwrap(),
+            binding,
+            "changed binding {scenario}"
+        );
+    }
+}
+
 #[test]
 fn explicit_legacy_agent_migration_repairs_dispatch_without_rebinding_or_replay() {
     let f = Fixture::new();
@@ -47,6 +184,45 @@ fn explicit_legacy_agent_migration_repairs_dispatch_without_rebinding_or_replay(
                 .unwrap()
                 .is_empty()
         );
+    }
+}
+
+#[test]
+fn explicit_refresh_also_handles_terminal_only_and_teem_selection_only() {
+    for terminal_only in [true, false] {
+        let f = Fixture::new();
+        f.enable();
+        let original = f.store.query("SELECT * FROM chat_enablements", []).unwrap()[0].clone();
+        let (mut request, mut herdr) = restored_context(&f);
+        if terminal_only {
+            request["agent"] = json!("build");
+            f.native.session.borrow_mut()["agent"] = json!("build");
+        } else {
+            herdr["result"]["agent"]["terminal_id"] = json!("terminal_a");
+        }
+        herdr["result"]["agents"] = json!([herdr["result"]["agent"].clone()]);
+        enable::enable(&f.store, &f.native, &request, &herdr).unwrap();
+        let history = f
+            .store
+            .query("SELECT * FROM chat_enablement_refreshes", [])
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<Value>(history[0]["previous_receipt"].as_str().unwrap())
+                .unwrap(),
+            original
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(history[0]["current_receipt"].as_str().unwrap()).unwrap(),
+            f.store.query("SELECT * FROM chat_enablements", []).unwrap()[0]
+        );
+        enable::authority(
+            &f.store,
+            &f.native,
+            CHAT,
+            request["agent"].as_str().unwrap(),
+        )
+        .unwrap();
     }
 }
 
@@ -750,6 +926,15 @@ fn native_recovery_retry_is_read_only_after_policy_removal() {
 
 #[test]
 fn cli_enable_uses_native_herdr_subprocess_and_exact_local_http_without_activation() {
+    cli_enable_contract(false);
+}
+
+#[test]
+fn cli_refresh_uses_trusted_herdr_roster_without_activation() {
+    cli_enable_contract(true);
+}
+
+fn cli_enable_contract(refresh: bool) {
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -758,6 +943,12 @@ fn cli_enable_uses_native_herdr_subprocess_and_exact_local_http_without_activati
         time::{Duration, Instant},
     };
     let f = Fixture::new();
+    let (request, herdr) = if refresh {
+        f.enable();
+        restored_context(&f)
+    } else {
+        (f.request(), f.herdr())
+    };
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let registry = f.directory.path().join("registry.json");
@@ -774,34 +965,36 @@ fn cli_enable_uses_native_herdr_subprocess_and_exact_local_http_without_activati
     fs::write(&config, toml::to_string(&settings).unwrap()).unwrap();
     let session = f.native.session.borrow().clone();
     let server = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "Exact native GET never arrived");
-                    thread::sleep(Duration::from_millis(5));
+        for _ in 0..if refresh { 2 } else { 1 } {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "Exact native GET never arrived");
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("{e}"),
                 }
-                Err(e) => panic!("{e}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 65536);
             }
-        };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        let mut request = Vec::new();
-        while !request.ends_with(b"\r\n\r\n") {
-            let mut byte = [0];
-            stream.read_exact(&mut byte).unwrap();
-            request.push(byte[0]);
-            assert!(request.len() < 65536);
+            assert!(
+                String::from_utf8(request)
+                    .unwrap()
+                    .starts_with(&format!("GET /api/session/{CHAT} HTTP/1.1\r\n"))
+            );
+            let body = canonical(&json!({"data":session}));
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
         }
-        assert!(
-            String::from_utf8(request)
-                .unwrap()
-                .starts_with(&format!("GET /api/session/{CHAT} HTTP/1.1\r\n"))
-        );
-        let body = canonical(&json!({"data":session}));
-        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
     });
     let mut child = Command::new(env!("CARGO_BIN_EXE_teem"))
         .args(["--config", config.to_str().unwrap(), "enable-chat"])
@@ -811,7 +1004,11 @@ fn cli_enable_uses_native_herdr_subprocess_and_exact_local_http_without_activati
             "HERDR_BIN_PATH",
             env!("CARGO_BIN_EXE_teem-subprocess-fixture"),
         )
-        .env("TEEM_FIXTURE_HERDR_RESULT", canonical(&f.herdr()))
+        .env("TEEM_FIXTURE_HERDR_RESULT", canonical(&herdr))
+        .env(
+            "TEEM_FIXTURE_HERDR_ROSTER",
+            canonical(&json!({"result":{"panes":herdr["result"]["agents"]}})),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -821,7 +1018,7 @@ fn cli_enable_uses_native_herdr_subprocess_and_exact_local_http_without_activati
         .stdin
         .take()
         .unwrap()
-        .write_all(canonical(&f.request()).as_bytes())
+        .write_all(canonical(&request).as_bytes())
         .unwrap();
     let output = child.wait_with_output().unwrap();
     server.join().unwrap();
@@ -832,6 +1029,7 @@ fn cli_enable_uses_native_herdr_subprocess_and_exact_local_http_without_activati
     );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["enabled"], true);
+    assert_eq!(result["refreshed"], refresh);
     assert_eq!(result["started"], false);
     assert_eq!(result["sessionID"], CHAT);
     assert!(f.store.tasks(None).unwrap().is_empty());

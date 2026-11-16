@@ -102,24 +102,37 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
     let receipt = json!({"foreman":id,"terminal_id":a["terminal_id"],
         "directory":n["location"]["directory"],"project_id":n["projectID"],
         "project":project,"agent":n["agent"],"model":selected,"native_model":observed});
+    let mut refreshed = false;
     s.transaction(|| {
-        if let Some(binding) = s.query("SELECT * FROM foremen WHERE id=?", [&id])?.first() {
-            ensure!(
-                binding["terminal_id"] == receipt["terminal_id"]
-                    || binding["terminal_id"] == format!("native-session:{id}"),
-                "Existing terminal binding changed; inspect it before enabling"
-            );
-        }
-        if let Some(old) = s
+        let bindings = s.query("SELECT * FROM foremen WHERE id=?", [&id])?;
+        let old = s
             .query("SELECT * FROM chat_enablements WHERE foreman=?", [&id])?
-            .first()
-        {
-            for k in ["terminal_id", "directory", "project_id", "project", "agent"] {
+            .into_iter().next();
+        if let Some(old) = &old {
+            for k in ["directory", "project_id", "project"] {
                 ensure!(
                     old[k] == receipt[k] || (k == "project" && old[k] == ""),
                     "Existing enabled chat {k} changed; inspect it before enabling"
                 );
             }
+            ensure!(bindings.first().is_some_and(|b| b["terminal_id"] == old["terminal_id"]),
+                "Stored enablement and terminal binding disagree; inspect before refreshing");
+            refreshed = old["terminal_id"] != receipt["terminal_id"] || old["agent"] != receipt["agent"];
+            if refreshed {
+                ensure!(old["agent"] == receipt["agent"] ||
+                    (receipt["agent"] == "teem" && matches!(old["agent"].as_str(),Some("build"|"teem_foreman"))),
+                    "Unsupported enabled-agent change; inspect the intended chat before refreshing");
+                validate_refresh_roster(herdr, &id, &text(old,"terminal_id"))?;
+                let current = native(r, &id)?;
+                ensure!(current["agent"] == n["agent"] && current["projectID"] == n["projectID"]
+                    && current["location"] == n["location"] && current["model"] == n["model"],
+                    "Native chat identity or model changed during enablement refresh");
+            }
+        }
+        if let Some(binding) = bindings.first() {
+            ensure!(refreshed || binding["terminal_id"] == receipt["terminal_id"]
+                || binding["terminal_id"] == format!("native-session:{id}"),
+                "Existing terminal binding changed; inspect it before enabling");
         }
         s.exec(
             "INSERT OR IGNORE INTO foremen(id,terminal_id) VALUES (?,?)",
@@ -128,8 +141,12 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
         // Replace only our native-session marker with the verified Herdr terminal.
         s.exec("UPDATE foremen SET terminal_id=? WHERE id=? AND terminal_id=?",
             params![text(&receipt, "terminal_id"), id, format!("native-session:{id}")])?;
+        if refreshed {
+            s.exec("UPDATE foremen SET terminal_id=? WHERE id=? AND terminal_id=?",
+                params![text(&receipt,"terminal_id"),id,text(old.as_ref().unwrap(),"terminal_id")])?;
+        }
         s.exec(
-            "INSERT INTO chat_enablements(foreman,terminal_id,directory,project_id,project,agent,model,native_model) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(foreman) DO UPDATE SET project=excluded.project,model=excluded.model,native_model=excluded.native_model",
+            "INSERT INTO chat_enablements(foreman,terminal_id,directory,project_id,project,agent,model,native_model) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(foreman) DO UPDATE SET terminal_id=excluded.terminal_id,agent=excluded.agent,project=excluded.project,model=excluded.model,native_model=excluded.native_model",
             params![
                 id,
                 text(&receipt, "terminal_id"),
@@ -141,11 +158,50 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
                 canonical(&json!(observed))
             ],
         )?;
+        if refreshed {
+            let current=s.query("SELECT * FROM chat_enablements WHERE foreman=?",[&id])?;
+            s.exec("INSERT INTO chat_enablement_refreshes(foreman,previous_receipt,current_receipt,created) VALUES (?,?,?,?)",
+                params![id,canonical(old.as_ref().unwrap()),canonical(&current[0]),now()])?;
+        }
         Ok(())
     })?;
     Ok(
-        json!({"enabled":true,"sessionID":id,"project":project,"terminal_id":a["terminal_id"],"started":false}),
+        json!({"enabled":true,"sessionID":id,"project":project,"terminal_id":a["terminal_id"],"refreshed":refreshed,"started":false}),
     )
+}
+
+fn validate_refresh_roster(herdr: &Value, id: &str, previous_terminal: &str) -> Result<()> {
+    let current = &herdr["result"]["agent"];
+    let roster = herdr["result"]["agents"].as_array().context(
+        "Enablement refresh needs a fresh Herdr pane roster; run /teem enable in the intended chat",
+    )?;
+    let mut terminals = std::collections::BTreeSet::new();
+    for pane in roster {
+        let terminal = pane["terminal_id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .context("Invalid Herdr pane roster; refresh refused")?;
+        ensure!(
+            terminals.insert(terminal),
+            "Duplicate terminal in Herdr pane roster; refresh refused"
+        );
+    }
+    let same_chat = roster
+        .iter()
+        .filter(|p| p["agent_session"]["value"] == id)
+        .collect::<Vec<_>>();
+    ensure!(
+        same_chat.len() == 1
+            && same_chat[0]["terminal_id"] == current["terminal_id"]
+            && same_chat[0]["agent"] == current["agent"]
+            && same_chat[0]["agent_session"] == current["agent_session"],
+        "Herdr must show one exact current pane for this native chat; refresh refused"
+    );
+    ensure!(
+        current["terminal_id"] == previous_terminal || !terminals.contains(previous_terminal),
+        "Previous terminal is still live; explicit pane handoff is required before refreshing"
+    );
+    Ok(())
 }
 
 /// Explicit operator migration, never an implicit relaxation of native authority.
