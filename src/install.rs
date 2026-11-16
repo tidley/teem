@@ -439,7 +439,13 @@ fn registration(
         template["agents"]["teem_foreman"]["system"]
             .as_str()
             .context("Missing shipped system prompt")?
-            .replace("teem_foreman_", "foreman_")
+            .replace("teem_foreman_", "teem_")
+            .replace("foreman_", "teem_")
+            .replace("You are the Teem Foreman", "You are Teem")
+            .replace("Foreman", "Teem")
+    );
+    template["agents"]["teem_foreman"]["description"] = json!(
+        "Teem: deliver authorised tasks through managed workers, checks and independent reviews"
     );
     let profile = &template["agents"]["teem_foreman"];
     ensure!(

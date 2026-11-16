@@ -595,14 +595,14 @@ fn native_tools_allow_configured_cross_project_work_but_reject_legacy_submission
             .as_array()
             .unwrap()
             .iter()
-            .all(|t| t["name"] != "foreman_submit")
+            .all(|t| t["name"] != "teem_submit")
     );
     assert!(
         plugin::tools()
             .as_array()
             .unwrap()
             .iter()
-            .any(|t| t["name"] == "foreman_submit")
+            .any(|t| t["name"] == "teem_submit")
     );
     let a = f.directory.path().join("a");
     let base = repository(&a);
@@ -617,11 +617,18 @@ fn native_tools_allow_configured_cross_project_work_but_reject_legacy_submission
     );
     assert!(f.store.workflows(CHAT).unwrap().is_empty());
     assert!(f.store.tasks(None).unwrap().is_empty());
+    assert!(
+        f.call("teem_submit", &legacy)
+            .unwrap_err()
+            .to_string()
+            .contains("legacy")
+    );
     let request_b = f.workflow("b");
     let b = f.call("foreman_workflow", &request_b).unwrap();
     assert_eq!(b["project"], "b");
     assert_eq!(b["foreman"], CHAT);
     assert_eq!(f.call("foreman_workflow", &request_b).unwrap(), b);
+    assert_eq!(f.call("teem_workflow", &request_b).unwrap(), b);
     assert_eq!(
         enable::authority(&f.store, &f.native, CHAT, "build").unwrap()["project"],
         "a"

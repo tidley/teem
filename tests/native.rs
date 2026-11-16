@@ -172,10 +172,11 @@ fn frozen_legacy_wire_and_digest_contracts_match() {
     let f: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
     let t = &f["task"];
     assert_eq!(runtime::permissions(t), f["permissions"]);
-    assert_eq!(
-        runtime::session_payload(t, &json!({})),
-        f["session_payload"]
-    );
+    let mut session = runtime::session_payload(t, &json!({}));
+    assert!(text(&session, "title").starts_with("Teem "));
+    session["title"] = f["session_payload"]["title"].clone();
+    assert_eq!(session, f["session_payload"]);
+    runtime::validate_session(t, &f["session_payload"], &json!({})).unwrap();
     assert_eq!(runtime::prompt_text(t), f["prompt_text"]);
     for (event, key) in [
         ("event", "event_payload"),
@@ -183,7 +184,10 @@ fn frozen_legacy_wire_and_digest_contracts_match() {
     ] {
         let mut payload = runtime::event_payload(&f[event]).unwrap();
         if event == "event" {
-            assert!(text(&payload, "text").starts_with(&text(&f[key], "text")));
+            assert!(
+                text(&payload, "text")
+                    .starts_with(&text(&f[key], "text").replace("foreman_", "teem_"))
+            );
         } else {
             assert!(
                 !text(&payload, "text").contains("Do not refresh the checklist, dispatch agents")
@@ -4003,6 +4007,9 @@ fn native_receipt_uses_exact_message_or_inbox_identity_without_resending() {
     let f: Value = serde_json::from_str(include_str!("fixtures/legacy-wire.json")).unwrap();
     let event = &f["event"];
     let payload = runtime::event_payload(event).unwrap();
+    assert!(!text(&payload, "text").contains("foreman_"));
+    let mut old_payload = payload.clone();
+    old_payload["text"] = json!(text(&payload, "text").replace("teem_", "foreman_"));
     let prefix = format!("/api/session/{}", text(event, "foreman"));
     let mut message = json!({"id":payload["id"],"type":"synthetic","text":payload["text"],"metadata":payload["metadata"]});
     let mut r = Routes {
@@ -4011,6 +4018,13 @@ fn native_receipt_uses_exact_message_or_inbox_identity_without_resending() {
     r.values.insert(
         format!("{prefix}/message/{}", text(&payload, "id")),
         message.clone(),
+    );
+    assert!(r.accepted(event).unwrap());
+    let mut old_message = message.clone();
+    old_message["text"] = old_payload["text"].clone();
+    r.values.insert(
+        format!("{prefix}/message/{}", text(&payload, "id")),
+        old_message,
     );
     assert!(r.accepted(event).unwrap());
     message["text"] = json!("changed payload");
@@ -5332,6 +5346,23 @@ fn descendant_handoff_preserves_inherited_prior_managers_read_access() {
             .any(|v| v["id"] == child["id"])
     );
     assert!(teem::handoff::authorize(&s, "ses_b", &child, false).is_err());
+}
+
+#[test]
+fn public_catalog_uses_teem_names_and_legacy_dispatch_stays_compatible() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = store(tmp.path(), &[], json!({}));
+    let catalog = plugin::tools();
+    for tool in catalog.as_array().unwrap() {
+        assert!(text(tool, "name").starts_with("teem_"));
+        assert!(!text(tool, "description").contains("foreman_"));
+    }
+    let args = json!({"section":"overview","limit":1});
+    assert_eq!(
+        plugin::call(&s, "ses_test", "teem_status", &args).unwrap(),
+        plugin::call(&s, "ses_test", "foreman_status", &args).unwrap()
+    );
+    assert!(plugin::call(&s, "ses_test", "teem_not_a_tool", &json!({})).is_err());
 }
 
 #[test]

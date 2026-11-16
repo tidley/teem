@@ -237,7 +237,7 @@ export function installResultCommand(context, select, present = value => context
         ...(progress.latest_result.recorded_at === undefined ? {} : { recorded_at: progress.latest_result.recorded_at }),
         ...(progress.latest_result.sections ? { sections: [ ...(warning ? [{ title: 'Observation', body: warning }] : []), ...progress.latest_result.sections ] } : {}),
       } : { title: 'Teem result', message: sessionID ?
-        'No saved Teem result for this chat. Check foreman_status for work in progress or older history.' :
+        'No saved Teem result for this chat. Check teem_status for work in progress or older history.' :
         'Open the intended chat before /teem-result.' })
     },
   }] }))

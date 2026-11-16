@@ -241,7 +241,7 @@ pub fn tools() -> Value {
     json!(
         array(&plugin::tools())
             .into_iter()
-            .filter(|t| t["name"] != "foreman_submit")
+            .filter(|t| t["name"] != "teem_submit")
             .collect::<Vec<_>>()
     )
 }
@@ -259,10 +259,10 @@ pub fn call(s: &Store, r: &dyn Runtime, envelope: &Value) -> Result<Value> {
     );
     let id = text(envelope, "sessionID");
     let receipt = authority(s, r, &id, &text(envelope, "agent"))?;
-    let name = text(envelope, "name");
+    let name = plugin::legacy_tool_name(&text(envelope, "name"));
     ensure!(
         name != "foreman_submit",
-        "Native chats use managed foreman_workflow, not legacy foreman_submit"
+        "Native chats use managed teem_workflow, not legacy teem_submit"
     );
     let input = &envelope["arguments"];
     // A retained recovery/setup-handoff retry is inspection, not renewed launch admission.

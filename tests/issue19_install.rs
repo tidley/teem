@@ -66,7 +66,19 @@ fn fresh_shared_install_repeat_and_unconfigured_native_bootstrap() {
         template["agents"]["teem_foreman"]["system"]
             .as_str()
             .unwrap()
-            .replace("teem_foreman_", "foreman_")
+            .replace("teem_foreman_", "teem_")
+            .replace("foreman_", "teem_")
+            .replace("You are the Teem Foreman", "You are Teem")
+            .replace("Foreman", "Teem")
+    );
+    template["agents"]["teem_foreman"]["description"] = json!(
+        "Teem: deliver authorised tasks through managed workers, checks and independent reviews"
+    );
+    assert!(
+        !global["agents"]["teem"]["system"]
+            .as_str()
+            .unwrap()
+            .contains("foreman_")
     );
     assert_eq!(global["agents"]["teem"], template["agents"]["teem_foreman"]);
     assert!(global["agents"].get("teem_foreman").is_none());

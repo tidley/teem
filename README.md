@@ -1,5 +1,9 @@
 # Teem
 
+Current tools use the `teem_*` prefix, including `teem_status` and `teem_workflow`.
+Legacy `foreman_*` calls remain accepted for retained sessions but are not advertised.
+Existing transcripts and native task identities remain unchanged.
+
 A local [Herdr](https://github.com/herdrdev/herdr) plugin with one visible Foreman and up to two workers plus two reviewers per managed task.
 The supervisor is a native [Rust](https://github.com/rust-lang/rust) executable, not another agent.
 The [OpenCode](https://github.com/anomalyco/opencode) TUI adapter uses the host's [TypeScript](https://github.com/microsoft/TypeScript) interface.

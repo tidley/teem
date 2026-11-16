@@ -309,7 +309,7 @@ fn mcp_status_is_readable_multiline_and_schema_matches_cli_options() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|t| t["name"] == "foreman_status")
+        .find(|t| t["name"] == "teem_status")
         .unwrap()["inputSchema"]["properties"];
     assert!(
         args.as_object()

@@ -160,7 +160,7 @@ fn installed_binary_and_mcp_round_trip_need_no_python_runtime() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|tool| tool["name"] == "foreman_reconcile")
+        .find(|tool| tool["name"] == "teem_reconcile")
         .unwrap();
     assert_eq!(
         reconcile["inputSchema"]["properties"]["setup_snapshot"]["type"],
@@ -181,19 +181,19 @@ fn installed_binary_and_mcp_round_trip_need_no_python_runtime() {
     assert_eq!(
         tool_names,
         vec![
-            "foreman_ack",
-            "foreman_color",
-            "foreman_handoff",
-            "foreman_integrate",
-            "foreman_plan",
-            "foreman_reconcile",
-            "foreman_recover_qualification",
-            "foreman_repair_prerequisites",
-            "foreman_result_notice",
-            "foreman_status",
-            "foreman_stop",
-            "foreman_submit",
-            "foreman_workflow"
+            "teem_ack",
+            "teem_color",
+            "teem_handoff",
+            "teem_integrate",
+            "teem_plan",
+            "teem_reconcile",
+            "teem_recover_qualification",
+            "teem_repair_prerequisites",
+            "teem_result_notice",
+            "teem_status",
+            "teem_stop",
+            "teem_submit",
+            "teem_workflow"
         ]
     );
     let plan: Value = serde_json::from_str(

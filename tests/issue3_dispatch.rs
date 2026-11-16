@@ -146,7 +146,7 @@ fn schemas_advertise_exclusive_compact_and_legacy_forms() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|t| t["name"] == name)
+            .find(|t| t["name"] == name.replace("foreman_", "teem_"))
             .unwrap();
         let schema = &tool["inputSchema"];
         let nested = &schema["properties"]["assignment"];
@@ -181,7 +181,7 @@ fn schemas_advertise_exclusive_compact_and_legacy_forms() {
         );
     }
     for tool in tools.as_array().unwrap() {
-        if !["foreman_submit", "foreman_workflow"].contains(&tool["name"].as_str().unwrap()) {
+        if !["teem_submit", "teem_workflow"].contains(&tool["name"].as_str().unwrap()) {
             assert!(
                 tool["inputSchema"]["properties"]
                     .get("assignment")

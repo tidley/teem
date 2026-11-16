@@ -82,7 +82,18 @@ pub fn open(c: &Value) -> Result<Store> {
     Ok(store)
 }
 pub fn tools() -> Value {
-    serde_json::from_str(include_str!("tools.json")).unwrap()
+    serde_json::from_str(
+        &include_str!("tools.json")
+            .replace("foreman_", "teem_")
+            .replace("Foreman", "Teem"),
+    )
+    .unwrap()
+}
+/// Keep retained callers compatible without advertising the old tool prefix.
+pub fn legacy_tool_name(name: &str) -> String {
+    name.strip_prefix("teem_")
+        .map(|suffix| format!("foreman_{suffix}"))
+        .unwrap_or_else(|| name.to_owned())
 }
 fn dispatch_args(name: &str, args: &Value) -> Result<Value> {
     let fields: &[&str] = match name {
@@ -118,12 +129,14 @@ fn dispatch_args(name: &str, args: &Value) -> Result<Value> {
     Ok(Value::Object(result))
 }
 pub fn call(s: &Store, f: &str, name: &str, args: &Value) -> Result<Value> {
+    let legacy_name = legacy_tool_name(name);
+    let name = legacy_name.as_str();
     let tools = tools();
     let def = tools
         .as_array()
         .unwrap()
         .iter()
-        .find(|t| t["name"] == name)
+        .find(|t| legacy_tool_name(&text(t, "name")) == name)
         .context("Unknown tool")?;
     let schema = &def["inputSchema"];
     let arguments = args.as_object().context("Arguments must be an object")?;
@@ -228,7 +241,9 @@ fn mcp_configured(
                         })();
                         match result {
                             Ok(data) => {
-                                let rendered = if text(&params, "name") == "foreman_status" {
+                                let rendered = if legacy_tool_name(&text(&params, "name"))
+                                    == "foreman_status"
+                                {
                                     serde_json::to_string_pretty(&data)?
                                 } else {
                                     serde_json::to_string(&data)?

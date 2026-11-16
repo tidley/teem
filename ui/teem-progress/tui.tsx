@@ -114,7 +114,7 @@ export default Plugin.define({
                 </box>}</For>
               </box>}</For>
               <Show when={passive()}>
-                <text fg={theme.text.muted}>Details/history: foreman_status</text>
+                <text fg={theme.text.muted}>Details/history: teem_status</text>
               </Show>
               <Show when={passive()?.latest_result}>{outcome => <box marginTop={1}>
                 <text fg={theme.text.base}>{outcome().historical ? 'Saved result' : 'Latest result'} · {outcome().title}</text>
