@@ -23,8 +23,9 @@ Herdr restoration can give the same native chat a new terminal ID. Selecting Tee
 can also leave a receipt captured earlier under `build` or the legacy agent name.
 In that exact chat, `/teem enable` can refresh the receipt when:
 
-- Native session ID, top-level status, project ID, directory and project policy
-  still match. The previous receipt and stored terminal binding agree.
+- Native session ID, top-level status, project ID and directory still match.
+  The previous receipt and stored terminal binding agree. A different matching
+  project alias cannot replace the saved association.
 - A fresh trusted Herdr roster shows exactly one pane for this native chat,
   matching the current pane and terminal. A replaced terminal is absent from the
   roster; a still-live old pane requires an explicit handoff instead.
@@ -53,17 +54,27 @@ and receipt guards. It does not impersonate a native tool caller or inject a
 prompt into the affected chat. This administrative command is not a targetable
 model tool; repair authority must come from the operator's request.
 
-For native/operator repair only, if no execution policy now matches the unchanged
+For all enablement paths, if no execution policy now matches the unchanged
 home directory, retain the old project association rather than inventing a new
 one. Status and other session-local tools can recover; execution admission still
 requires a matching current home policy. A different matching project alias is
-not adopted by refresh. The TUI's explicit model-capture command keeps its existing
-policy-change guard.
+not adopted by refresh. `/teem enable` follows the same rule while still capturing
+the model explicitly selected in the TUI. A relocated execution policy is not a
+change to the chat's native project identity and does not block model capture.
 
 Changing project/directory, inconsistent bindings, unavailable rosters and multiple
 live views fail closed. An agent or stale-terminal mismatch is not a code-check failure.
 
 ## Operator prerequisites
+
+Native `teem_issue_status` takes an exact `owner/repo#number` and optional `offset`.
+It discovers historical workflow IDs, responsible coordinators and recorded task/
+stop states from the caller's unchanged native home directory, five workflows per
+page. No `/teem enable` is needed. Read `has_more`/`next_offset`; truncated task
+lists are not complete evidence. This metadata-only lookup cannot read another
+coordinator's prompts, results or reviews, confirm live termination, release a
+repository hold, or transfer management. Normal owner checks remain in effect
+for detailed status, stops, recovery and all other workflow operations.
 
 - Configure the private Teem state directory, loopback native service registry,
   legacy fallback model as described in [the plugin guide](HERDR_PLUGIN.md).

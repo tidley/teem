@@ -3,6 +3,14 @@ use crate::{common::*, store::Store};
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 
+/// Handoff traversal needs provenance only, not candidate data or stop targets.
+/// Keep these reads small even when a historical workflow has many tasks.
+pub fn metadata(s: &Store, id: &str) -> Result<Value> {
+    let mut row = s.query("SELECT id,foreman,project,state,json_extract(request,'$.issue') AS issue,json_extract(request,'$.reconcile_from') AS reconcile_from,json_extract(request,'$.qualification_recovery.source_workflow_id') AS qualification_source FROM workflows WHERE id=?",[id])?.into_iter().next().context("Workflow not found")?;
+    row["request"] = serde_json::json!({"issue":row["issue"],"reconcile_from":row["reconcile_from"],"qualification_recovery":{"source_workflow_id":row["qualification_source"]}});
+    Ok(row)
+}
+
 fn parent(s: &Store, current: &Value, root: &Value) -> Result<Option<Value>> {
     let id = current["request"]["qualification_recovery"]["source_workflow_id"]
         .as_str()
@@ -15,7 +23,7 @@ fn parent(s: &Store, current: &Value, root: &Value) -> Result<Option<Value>> {
     {
         return Ok(None);
     }
-    let next = s.workflow(id)?;
+    let next = metadata(s, id)?;
     Ok((next["foreman"] == root["foreman"]
         && next["project"] == root["project"]
         && (next["request"]["issue"].is_null()

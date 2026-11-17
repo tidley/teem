@@ -41,7 +41,17 @@ fn default_runner_reexecutes_its_mapped_image_after_atomic_upgrade() {
     fs::create_dir(&source).unwrap();
     git(&source, &["init"], None, None).unwrap();
     let executable = tmp.path().join("deleted-runner-fixture");
-    fs::copy(env!("CARGO_BIN_EXE_teem-subprocess-fixture"), &executable).unwrap();
+    // Copy in a single-threaded process: concurrent test forks must not inherit
+    // a writable descriptor and make the subsequent exec fail with ETXTBSY.
+    assert!(
+        std::process::Command::new(env!("CARGO_BIN_EXE_teem-subprocess-fixture"))
+            .arg("copy-executable")
+            .arg(env!("CARGO_BIN_EXE_teem-subprocess-fixture"))
+            .arg(&executable)
+            .status()
+            .unwrap()
+            .success()
+    );
     let output = std::process::Command::new(&executable)
         .arg("deleted-runner")
         .arg(tmp.path().join("checks"))

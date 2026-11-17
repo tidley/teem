@@ -19,3 +19,6 @@ CREATE INDEX IF NOT EXISTS workflow_handoffs_target ON workflow_handoffs(target_
 CREATE INDEX IF NOT EXISTS workflow_handoffs_owner ON workflow_handoffs(original_foreman);
 CREATE TABLE IF NOT EXISTS workflow_stops(workflow_id TEXT PRIMARY KEY,requested REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS task_stops(task_id TEXT PRIMARY KEY,state TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '');
+-- Bound issue discovery and task metadata lookup to their exact recorded scope.
+CREATE INDEX IF NOT EXISTS workflows_issue_home ON workflows(json_extract(request,'$.issue'),json_extract(policy,'$.path'),created DESC,id);
+CREATE INDEX IF NOT EXISTS tasks_workflow ON tasks(json_extract(request,'$.workflow_id'),created,id);

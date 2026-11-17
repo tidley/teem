@@ -8,6 +8,9 @@ use std::{
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.first().map(String::as_str) {
+        Some("copy-executable") => {
+            std::fs::copy(&args[1], &args[2]).unwrap();
+        }
         Some("deleted-runner") => {
             std::fs::remove_file(std::env::current_exe().unwrap()).unwrap();
             let mut runner = teem::checks::Runner::default();

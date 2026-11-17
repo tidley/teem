@@ -20,6 +20,14 @@ through raw SQL, shell or ad-hoc API writes. If supported recovery is missing,
 repair that limitation where the task's authority covers it, then verify/review
 the repair before use; do not call a missing implementation "missing consent".
 
+When a hold cites an issue but the workflow ID is unknown, use native
+`teem_issue_status` with the exact issue reference. It returns bounded historical
+coordination metadata for this chat's native home directory, including the
+responsible coordinator and recorded stop states. It does not require optional
+enablement or grant management/full-evidence access. Do not ask the user to locate
+an ID available through this lookup. The recorded coordinator remains responsible
+for stop confirmation and recovery; a missing native session is not proof of stop.
+
 Preserve all existing safety gates: required checks and two independent reviews,
 remaining revision budgets, ownership/handoff restrictions, uncertain executions,
 human-only permission cards, private data and separately authorised external,

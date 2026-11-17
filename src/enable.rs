@@ -127,10 +127,10 @@ fn enable_observed(
             .query("SELECT * FROM chat_enablements WHERE foreman=?", [&id])?
             .into_iter().next();
         if let Some(old) = &old {
-            // Same-chat repair is not execution admission. Preserve the old
+            // Same-chat enablement is not execution admission. Preserve the old
             // policy association if no policy now matches the unchanged home;
             // execution_project still rejects delegation from that directory.
-            if expected.is_some() && matches.is_empty() {
+            if matches.is_empty() {
                 receipt["project"] = old["project"].clone();
             }
             for k in ["directory", "project_id", "project"] {
@@ -323,6 +323,7 @@ pub fn tools() -> Value {
         .filter(|t| t["name"] != "teem_submit")
         .collect::<Vec<_>>();
     tools.push(json!({"name":"teem_refresh_enablement","description":"Repair this authenticated chat's stale enablement after terminal restoration or selection of Teem. Retains model selection, permissions and workflow ownership; verifies native identity and a complete Herdr pane roster. Starts no work; no repeated user approval is needed for same-chat repair.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}));
+    tools.push(json!({"name":"teem_issue_status","description":"Find historical workflows and stop evidence for an exact issue in this chat's native home directory, even without /teem enable. Read-only coordination metadata includes the responsible coordinator, workflow/task IDs and recorded stop states. Does not grant full owner access, confirm live termination, release a hold or authorise management/replay. Use this instead of asking the user to find an old workflow ID.","inputSchema":{"type":"object","properties":{"issue":{"type":"string","description":"Exact owner/repo#positive-number"},"offset":{"type":"integer","minimum":0,"maximum":1000000}},"required":["issue"],"additionalProperties":false}}));
     json!(tools)
 }
 
@@ -412,6 +413,9 @@ pub fn call(s: &Store, r: &dyn Runtime, envelope: &Value) -> Result<Value> {
         "Native chats use managed teem_workflow, not legacy teem_submit"
     );
     let input = &envelope["arguments"];
+    if name == "foreman_issue_status" {
+        return issue_status(s, &receipt, input);
+    }
     // A retained recovery/setup-handoff retry is inspection, not renewed launch admission.
     // Authentication and immutable-argument/owner validation still apply.
     if name == "foreman_recover_qualification"
@@ -451,6 +455,49 @@ pub fn call(s: &Store, r: &dyn Runtime, envelope: &Value) -> Result<Value> {
     }
     // Inspection remains available even for retained evidence from other projects.
     plugin::call(s, &id, &name, input)
+}
+
+fn issue_status(s: &Store, receipt: &Value, input: &Value) -> Result<Value> {
+    ensure!(
+        input.as_object().is_some_and(|a| a.contains_key("issue")
+            && a.keys().all(|k| ["issue", "offset"].contains(&k.as_str()))),
+        "Use only issue and optional offset for historical discovery"
+    );
+    let issue = issue_reference(&input["issue"])?;
+    let offset = if input.get("offset").is_some() {
+        input["offset"]
+            .as_i64()
+            .filter(|n| (0..=1000000).contains(n))
+            .context("Invalid discovery offset")?
+    } else {
+        0
+    };
+    // Discovery is project-local metadata, not an alternate route into another
+    // coordinator's evidence or authority. The caller cannot supply a directory.
+    let directory = Path::new(&text(&receipt["native"]["location"], "directory")).canonicalize()?;
+    let rows = s.query("SELECT id FROM workflows WHERE json_extract(request,'$.issue')=? AND json_extract(policy,'$.path')=? ORDER BY created DESC,id LIMIT 6 OFFSET ?",params![issue,directory.to_str().context("Invalid native directory")?,offset])?;
+    let more = rows.len() > 5;
+    let mut workflows = Vec::new();
+    for row in rows.iter().take(5) {
+        let id = text(row, "id");
+        let workflow = crate::handoff::metadata(s, &id)?;
+        let manager = crate::handoff::manager(s, &workflow)?;
+        // Aggregate in SQLite instead of loading private, potentially unbounded
+        // stop targets. Match control::snapshot's recorded-state precedence.
+        let stops = s.query("SELECT ws.requested,(SELECT CASE WHEN coalesce(sum(st.state='uncertain'),0)>0 THEN 'uncertain' WHEN coalesce(sum(st.state!='stopped'),0)>0 THEN 'requested' ELSE 'stopped' END FROM task_stops st JOIN tasks t ON t.id=st.task_id WHERE json_extract(t.request,'$.workflow_id')=ws.workflow_id) AS state FROM workflow_stops ws WHERE ws.workflow_id=?",[&id])?;
+        let stop = stops.first().cloned().unwrap_or(Value::Null);
+        // Never expose prompts, results, paths or private review contents through
+        // discovery. Full evidence and all mutations retain normal owner checks.
+        let tasks = s.query("SELECT t.id,t.role,t.state,st.state AS stop_state FROM tasks t LEFT JOIN task_stops st ON st.task_id=t.id WHERE json_extract(t.request,'$.workflow_id')=? ORDER BY t.created,t.id LIMIT 11",[&id])?;
+        workflows.push(json!({"id":id,"project":workflow["project"],"state":workflow["state"],"responsible_coordinator":manager,
+            "workflow_paused":!stops.is_empty(),"stop_state":stop["state"],"stop_requested_at":stop["requested"],
+            "tasks":tasks.iter().take(10).collect::<Vec<_>>(),"tasks_truncated":tasks.len()>10}));
+    }
+    Ok(
+        json!({"issue":issue,"read_only":true,"workflows":workflows,"has_more":more,"next_offset":if more { json!(offset+5) } else { Value::Null },
+        "evidence":"Recorded coordination metadata only; absence of a live session or observed running task is not confirmation of termination.",
+        "responsibility":"Use the recorded responsible coordinator for full evidence and stop recovery. Discovery does not transfer ownership, release a hold or authorise replacement. Do not ask the user to locate IDs available here."}),
+    )
 }
 
 pub fn dispatch_model(s: &Store, r: &dyn Runtime, task: &Value) -> Result<Value> {

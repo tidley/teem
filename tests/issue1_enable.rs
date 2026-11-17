@@ -14,6 +14,90 @@ use teem::{
 const CHAT: &str = "ses_issue1";
 
 #[test]
+fn native_issue_lookup_finds_same_home_hold_without_enablement_or_management() {
+    let f = Fixture::new();
+    let owner = "ses_original_owner";
+    f.store.bind(owner, "terminal_old_owner").unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let task = uuid::Uuid::new_v4().to_string();
+    for (workflow, path, issue) in [
+        (id.clone(), f.directory.path().join("a"), "tidley/teem#518"),
+        (
+            uuid::Uuid::new_v4().to_string(),
+            f.directory.path().join("b"),
+            "tidley/teem#518",
+        ),
+        (
+            uuid::Uuid::new_v4().to_string(),
+            f.directory.path().join("a"),
+            "tidley/teem#519",
+        ),
+    ] {
+        f.store.exec("INSERT INTO workflows(id,foreman,project,request,policy,state,created) VALUES (?,?,?,?,?,'blocked',?)",params![workflow,owner,"a",canonical(&json!({"issue":issue,"prompt":"PRIVATE WORKER PROMPT"})),canonical(&json!({"path":path})),now()]).unwrap();
+    }
+    f.store
+        .exec(
+            "INSERT INTO workflow_stops VALUES (?,?)",
+            params![id, now()],
+        )
+        .unwrap();
+    f.store.exec("INSERT INTO tasks(id,foreman,role,checkout,state,request,session_id,prompt_id,sparse,created) VALUES (?,?,'worker',?,'uncertain',?,'ses_missing_worker','msg_old_worker',0,?)",params![task,owner,f.directory.path().join("a").to_str().unwrap(),canonical(&json!({"workflow_id":id})),now()]).unwrap();
+    f.store
+        .exec(
+            "INSERT INTO task_stops VALUES (?,'requested','Stop unconfirmed')",
+            [&task],
+        )
+        .unwrap();
+    let before = f.store.query("SELECT * FROM workflows", []).unwrap();
+    let tasks = f.store.query("SELECT * FROM tasks", []).unwrap();
+    let result = f
+        .call("teem_issue_status", &json!({"issue":"tidley/teem#518"}))
+        .unwrap();
+    assert_eq!(result["workflows"].as_array().unwrap().len(), 1);
+    assert_eq!(result["workflows"][0]["id"], id);
+    assert_eq!(result["workflows"][0]["state"], "blocked");
+    assert_eq!(result["workflows"][0]["responsible_coordinator"], owner);
+    assert_eq!(result["workflows"][0]["stop_state"], "requested");
+    assert_eq!(result["workflows"][0]["tasks"][0]["state"], "uncertain");
+    assert_eq!(
+        result["workflows"][0]["tasks"][0]["stop_state"],
+        "requested"
+    );
+    assert_eq!(result["read_only"], true);
+    assert!(!canonical(&result).contains("PRIVATE WORKER PROMPT"));
+    assert!(
+        f.call("teem_status", &json!({"workflow_id":id})).is_err(),
+        "Discovery must not grant full owner access"
+    );
+    assert!(
+        f.call("teem_stop", &json!({"workflow_id":id})).is_err(),
+        "Discovery must not grant management"
+    );
+    assert_eq!(
+        f.store.query("SELECT * FROM workflows", []).unwrap(),
+        before
+    );
+    assert_eq!(f.store.query("SELECT * FROM tasks", []).unwrap(), tasks);
+    assert!(
+        f.store
+            .query("SELECT * FROM chat_enablements", [])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        f.call("teem_issue_status", &json!({"issue":"518"}))
+            .is_err()
+    );
+    assert!(
+        f.call(
+            "teem_issue_status",
+            &json!({"issue":"tidley/teem#518","directory":"/other"})
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn refresh_request_requires_existing_receipt_exact_caller_and_no_target_arguments() {
     let f = Fixture::new();
     let envelope =
@@ -42,6 +126,84 @@ fn refresh_request_requires_existing_receipt_exact_caller_and_no_target_argument
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn native_issue_lookup_bounds_tasks_and_resolves_inherited_handoff_manager() {
+    let f = Fixture::new();
+    let owner = "ses_original_owner";
+    f.store.bind(owner, "terminal_original").unwrap();
+    let parent = uuid::Uuid::new_v4().to_string();
+    let child = uuid::Uuid::new_v4().to_string();
+    for (id, source) in [(&parent, Value::Null), (&child, json!(parent))] {
+        f.store.exec("INSERT INTO workflows(id,foreman,project,request,policy,state,created) VALUES (?,?,'a',?,?,'blocked',?)",params![id,owner,canonical(&json!({"issue":"tidley/teem#518","reconcile_from":source})),canonical(&json!({"path":f.directory.path().join("a")})),now()]).unwrap();
+    }
+    f.store.exec("INSERT INTO workflow_handoffs(workflow_id,original_foreman,source_foreman,target_foreman,reason,created) VALUES (?,?,?,'ses_new_manager','approved handoff fixture',?)",params![parent,owner,owner,now()]).unwrap();
+    f.store
+        .exec(
+            "INSERT INTO workflow_stops VALUES (?,?)",
+            params![child, now()],
+        )
+        .unwrap();
+    for i in 0..12 {
+        let task = uuid::Uuid::new_v4().to_string();
+        f.store.exec("INSERT INTO tasks(id,foreman,role,checkout,state,request,session_id,prompt_id,sparse,created) VALUES (?,?,'worker',?,'interrupted',?,?,?,0,?)",params![task,owner,f.directory.path().join("a").to_str().unwrap(),canonical(&json!({"workflow_id":child})),format!("ses_task_{i}"),format!("msg_task_{i}"),now()]).unwrap();
+        f.store
+            .exec(
+                "INSERT INTO task_stops VALUES (?,'stopped','PRIVATE STOP DETAIL')",
+                [&task],
+            )
+            .unwrap();
+    }
+    let result = f
+        .call("teem_issue_status", &json!({"issue":"tidley/teem#518"}))
+        .unwrap();
+    let rows = result["workflows"].as_array().unwrap();
+    let row = rows.iter().find(|w| w["id"] == child).unwrap();
+    assert_eq!(row["tasks"].as_array().unwrap().len(), 10);
+    assert_eq!(row["tasks_truncated"], true);
+    assert_eq!(row["stop_state"], "stopped");
+    assert_eq!(row["responsible_coordinator"], "ses_new_manager");
+    assert!(!canonical(&result).contains("PRIVATE STOP DETAIL"));
+    assert!(serde_json::to_string_pretty(&result).unwrap().len() < 24000);
+}
+
+#[test]
+fn native_issue_lookup_paginates_without_leaking_other_home_and_rejects_bad_offsets() {
+    let f = Fixture::new();
+    f.store.bind("ses_history", "terminal_history").unwrap();
+    for _ in 0..7 {
+        f.store.exec("INSERT INTO workflows(id,foreman,project,request,policy,state,created) VALUES (?,'ses_history','a',?,?,'blocked',?)",params![uuid::Uuid::new_v4().to_string(),canonical(&json!({"issue":"tidley/teem#518"})),canonical(&json!({"path":f.directory.path().join("a")})),now()]).unwrap();
+    }
+    let first = f
+        .call("teem_issue_status", &json!({"issue":"TIDLEY/TEEM#518"}))
+        .unwrap();
+    assert_eq!(first["workflows"].as_array().unwrap().len(), 5);
+    assert_eq!(first["has_more"], true);
+    assert_eq!(first["next_offset"], 5);
+    let next = f
+        .call(
+            "teem_issue_status",
+            &json!({"issue":"tidley/teem#518","offset":5}),
+        )
+        .unwrap();
+    assert_eq!(next["workflows"].as_array().unwrap().len(), 2);
+    assert_eq!(next["has_more"], false);
+    assert!(next["next_offset"].is_null());
+    for offset in [json!(-1), json!(1.5), json!(1000001), json!(null)] {
+        assert!(
+            f.call(
+                "teem_issue_status",
+                &json!({"issue":"tidley/teem#518","offset":offset})
+            )
+            .is_err()
+        );
+    }
+    f.native.session.borrow_mut()["location"]["directory"] = json!(f.directory.path().join("b"));
+    let other = f
+        .call("teem_issue_status", &json!({"issue":"tidley/teem#518"}))
+        .unwrap();
+    assert!(other["workflows"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -92,6 +254,75 @@ fn same_chat_repair_preserves_removed_home_policy_without_granting_execution() {
     assert!(enable::dispatch_model(&f.store, &f.native, &json!({"foreman":CHAT})).is_err());
     assert!(f.store.tasks(None).unwrap().is_empty());
     assert!(f.store.workflows(CHAT).unwrap().is_empty());
+}
+
+#[test]
+fn explicit_enable_preserves_relocated_home_policy_without_granting_execution() {
+    for restored in [false, true] {
+        let mut f = Fixture::new();
+        f.enable();
+        let (mut request, herdr) = if restored {
+            restored_context(&f)
+        } else {
+            (f.request(), f.herdr())
+        };
+        let old = f.store.query("SELECT * FROM chat_enablements", []).unwrap()[0].clone();
+        // Same policy alias now targets another checkout, not this native home.
+        f.store.projects["a"]["path"] = json!(f.directory.path().join("b"));
+        request["model"] = json!({"providerID":"selected","id":"new","variant":"high"});
+        let result = enable::enable(&f.store, &f.native, &request, &herdr).unwrap();
+        assert_eq!(result["project"], "a");
+        assert_eq!(result["started"], false);
+        let receipt = enable::authority(
+            &f.store,
+            &f.native,
+            CHAT,
+            request["agent"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["project"], "a");
+        assert_eq!(receipt["directory"], old["directory"]);
+        assert_eq!(receipt["project_id"], old["project_id"]);
+        assert_eq!(receipt["model"], request["model"]);
+        assert!(enable::dispatch_model(&f.store, &f.native, &json!({"foreman":CHAT})).is_err());
+        assert!(enable::validate_execution(&f.store, &f.native, CHAT, "a").is_err());
+        for table in ["tasks", "workflows", "events", "approvals"] {
+            assert!(
+                f.store
+                    .query(&format!("SELECT * FROM {table}"), [])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            f.store
+                .query("SELECT * FROM chat_enablement_refreshes", [])
+                .unwrap()
+                .len(),
+            usize::from(restored)
+        );
+    }
+}
+
+#[test]
+fn explicit_enable_rejects_adopting_a_different_matching_alias_without_writes() {
+    let mut f = Fixture::new();
+    f.enable();
+    let old = f.store.query("SELECT * FROM chat_enablements", []).unwrap();
+    let binding = f.store.binding(CHAT).unwrap();
+    let policy = f.store.projects["a"].clone();
+    f.store.projects = json!({"renamed":policy});
+    assert!(
+        enable::enable(&f.store, &f.native, &f.request(), &f.herdr())
+            .unwrap_err()
+            .to_string()
+            .contains("project changed")
+    );
+    assert_eq!(
+        f.store.query("SELECT * FROM chat_enablements", []).unwrap(),
+        old
+    );
+    assert_eq!(f.store.binding(CHAT).unwrap(), binding);
 }
 
 #[test]
@@ -1049,6 +1280,15 @@ fn operator_refresh_uses_exact_native_identity_without_impersonating_tool_contex
 }
 
 fn cli_enable_contract(refresh: bool, tool: bool, operator: bool) {
+    cli_enable_policy_contract(refresh, tool, operator, false);
+}
+
+#[test]
+fn cli_explicit_enable_preserves_existing_receipt_after_policy_checkout_moves() {
+    cli_enable_policy_contract(false, false, false, true);
+}
+
+fn cli_enable_policy_contract(refresh: bool, tool: bool, operator: bool, moved_policy: bool) {
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -1057,6 +1297,9 @@ fn cli_enable_contract(refresh: bool, tool: bool, operator: bool) {
         time::{Duration, Instant},
     };
     let f = Fixture::new();
+    if moved_policy {
+        f.enable();
+    }
     let (request, herdr) = if refresh {
         f.enable();
         restored_context(&f)
@@ -1079,7 +1322,7 @@ fn cli_enable_contract(refresh: bool, tool: bool, operator: bool) {
     .unwrap();
     let config = f.directory.path().join("config.toml");
     let settings = json!({"enabled":false,"state_dir":f.store.directory,"registry":registry,"model":"test/fallback",
-        "projects":{"a":{"path":f.directory.path().join("a"),"checks":[{"name":"tests","kind":"test","argv":["cargo","test","--locked"]}]}}});
+        "projects":{"a":{"path":f.directory.path().join(if moved_policy { "b" } else { "a" }),"checks":[{"name":"tests","kind":"test","argv":["cargo","test","--locked"]}]}}});
     fs::write(&config, toml::to_string(&settings).unwrap()).unwrap();
     let session = f.native.session.borrow().clone();
     let server = thread::spawn(move || {
@@ -1176,6 +1419,7 @@ fn cli_enable_contract(refresh: bool, tool: bool, operator: bool) {
     assert_eq!(result["refreshed"], refresh);
     assert_eq!(result["started"], false);
     assert_eq!(result["sessionID"], CHAT);
+    assert_eq!(result["project"], "a");
     assert!(f.store.tasks(None).unwrap().is_empty());
     assert!(f.store.workflows(CHAT).unwrap().is_empty());
     let output = Command::new(env!("CARGO_BIN_EXE_teem"))
