@@ -4009,7 +4009,17 @@ fn native_receipt_uses_exact_message_or_inbox_identity_without_resending() {
     let payload = runtime::event_payload(event).unwrap();
     assert!(!text(&payload, "text").contains("foreman_"));
     let mut old_payload = payload.clone();
-    old_payload["text"] = json!(text(&payload, "text").replace("teem_", "foreman_"));
+    // Historical receipts predate the autonomous-delivery suffix; do not
+    // fabricate a legacy payload by renaming tools inside the new policy.
+    old_payload["text"] = json!(
+        text(&payload, "text")
+            .strip_suffix(&format!(
+                "\n\n{}",
+                include_str!("../docs/AUTONOMOUS_DELIVERY.md")
+            ))
+            .unwrap()
+            .replace("teem_", "foreman_")
+    );
     let prefix = format!("/api/session/{}", text(event, "foreman"));
     let mut message = json!({"id":payload["id"],"type":"synthetic","text":payload["text"],"metadata":payload["metadata"]});
     let mut r = Routes {

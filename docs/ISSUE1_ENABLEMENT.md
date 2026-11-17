@@ -37,6 +37,29 @@ The old and new receipts are retained in `chat_enablement_refreshes`. Updates ar
 atomic and repeating a successful enable creates no additional refresh record.
 This changes no permissions, task/session/prompt IDs, workflow ownership, policy,
 review history or execution state; it starts no work and replays no input.
+
+The agent can instead call native `teem_refresh_enablement` with no arguments.
+This tool uses host-authenticated session and caller identity, not a supplied
+target or the server's focused-pane environment. It requires an existing receipt,
+retains its effective model selection, resolves the unique exact chat from `herdr pane list`,
+rechecks that pane with `herdr agent get`, and uses the same guards above. This
+same-chat repair needs no repeated user approval. It cannot enable another chat,
+change permissions, take over workflows or operate through fixed-owner MCP.
+
+For an explicitly requested repair from another operator chat, the CLI provides
+`teem --config CONFIG refresh-chat EXACT_SESSION_ID`. It reads identity from the
+native runtime, retains the effective model selection, and applies the same roster
+and receipt guards. It does not impersonate a native tool caller or inject a
+prompt into the affected chat. This administrative command is not a targetable
+model tool; repair authority must come from the operator's request.
+
+For native/operator repair only, if no execution policy now matches the unchanged
+home directory, retain the old project association rather than inventing a new
+one. Status and other session-local tools can recover; execution admission still
+requires a matching current home policy. A different matching project alias is
+not adopted by refresh. The TUI's explicit model-capture command keeps its existing
+policy-change guard.
+
 Changing project/directory, inconsistent bindings, unavailable rosters and multiple
 live views fail closed. An agent or stale-terminal mismatch is not a code-check failure.
 

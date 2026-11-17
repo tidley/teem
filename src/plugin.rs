@@ -333,6 +333,46 @@ fn enable_context(s: &Store, request: &Value) -> Result<Value> {
     }
     Ok(context)
 }
+fn refresh_context(request: &Value) -> Result<Value> {
+    let binary = std::env::var_os("HERDR_BIN_PATH").unwrap_or("herdr".into());
+    let out = Command::new(&binary).args(["pane", "list"]).output()?;
+    ensure!(
+        out.status.success() && out.stdout.len() <= 1048576,
+        "Cannot inspect current Herdr pane roster; refresh refused"
+    );
+    let roster: Value = serde_json::from_slice(&out.stdout)?;
+    let panes = roster["result"]["panes"]
+        .as_array()
+        .context("Missing Herdr pane roster")?;
+    let matches: Vec<_> = panes
+        .iter()
+        .filter(|p| p["agent_session"]["value"] == request["sessionID"])
+        .collect();
+    ensure!(
+        matches.len() == 1,
+        "Herdr must show one exact current pane for this native chat; refresh refused"
+    );
+    let pane = matches[0]["pane_id"]
+        .as_str()
+        .filter(|p| !p.is_empty())
+        .context("Missing Herdr pane ID")?;
+    let out = Command::new(&binary)
+        .args(["agent", "get", pane])
+        .output()?;
+    ensure!(
+        out.status.success() && out.stdout.len() <= 1048576,
+        "Cannot recheck Herdr chat identity"
+    );
+    let mut context: Value = serde_json::from_slice(&out.stdout)?;
+    for field in ["terminal_id", "agent", "agent_session"] {
+        ensure!(
+            context["result"]["agent"][field] == matches[0][field],
+            "Herdr pane changed during enablement refresh"
+        );
+    }
+    context["result"]["agents"] = json!(panes);
+    Ok(context)
+}
 pub fn bind(s: &Store) -> Result<Value> {
     let response = focused_agent()?;
     let a = &response["result"]["agent"];
@@ -521,6 +561,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             "serve",
             "service-start",
             "enable-chat",
+            "refresh-chat",
             "migrate-chat-agent",
             "native-tools",
             "native-setup",
@@ -570,6 +611,21 @@ pub fn main(args: Vec<String>) -> Result<()> {
     }
     let s = open(&c)?;
     match command.as_str() {
+        "refresh-chat" => {
+            ensure!(
+                rest.len() == 1,
+                "refresh-chat requires one exact native session ID"
+            );
+            let runtime = OpenCode::new(&expand(&text(&c, "registry")), &text(&c, "model"))?;
+            let request = crate::enable::operator_refresh_request(&s, &runtime, &rest[0])?;
+            let result = crate::enable::refresh(
+                &s,
+                &runtime,
+                &request,
+                &refresh_context(&request.request)?,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
         "enable-chat" | "native-call" | "migrate-chat-agent" => {
             ensure!(rest.is_empty(), "Native bridge accepts JSON on stdin only");
             let mut bytes = Vec::new();
@@ -582,6 +638,9 @@ pub fn main(args: Vec<String>) -> Result<()> {
                 crate::enable::migrate_agent(&s, &runtime, &request)?
             } else if command == "enable-chat" {
                 crate::enable::enable(&s, &runtime, &request, &enable_context(&s, &request)?)?
+            } else if request["name"] == "teem_refresh_enablement" {
+                let refresh = crate::enable::refresh_request(&s, &runtime, &request)?;
+                crate::enable::refresh(&s, &runtime, &refresh, &refresh_context(&refresh.request)?)?
             } else {
                 crate::enable::call(&s, &runtime, &request)?
             };

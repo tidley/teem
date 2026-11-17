@@ -157,6 +157,15 @@ pub fn prompt_text(t: &Value) -> String {
 const OUTCOME_EVIDENCE: &str = "Status retrieval: use this workflow_id or task_id; default status is a bounded summary. Read actual check results, both exact-candidate verdicts and unresolved findings/limitations. Follow marked truncations/missing rows with section pagination or mode=detail and JSON pointer, then next_offset chunks. Never claim success or acknowledge unseen evidence from a returned file path. If output is inaccessible, retry a narrower section/smaller limit; otherwise report the blocker without ack. Do not broaden directory permissions. Execution success is not review approval; ready is candidate qualification. Later integration receipts take precedence over historical candidate details; integration does not verify publication or runtime. Only acknowledge after consuming the relevant readable outcome.";
 
 pub fn event_payload(e: &Value) -> Result<Value> {
+    let mut payload = named_event_payload(e)?;
+    payload["text"] = json!(format!(
+        "{}\n\n{}",
+        text(&payload, "text"),
+        include_str!("../docs/AUTONOMOUS_DELIVERY.md")
+    ));
+    Ok(payload)
+}
+fn named_event_payload(e: &Value) -> Result<Value> {
     let mut payload = pre_teem_event_payload(e)?;
     payload["text"] = json!(text(&payload, "text").replace("foreman_", "teem_"));
     Ok(payload)
@@ -219,6 +228,7 @@ fn validate_event(e: &Value, m: &Value, queued: bool) -> Result<()> {
             && m["type"] == "synthetic"
             && (!queued || m["sessionID"] == e["foreman"])
             && (body["text"] == expected["text"]
+                || body["text"] == named_event_payload(e)?["text"]
                 || body["text"] == pre_teem_event_payload(e)?["text"]
                 || body["text"] == autonomy_event_payload(e)?["text"]
                 || body["text"] == previous_event_payload(e)?["text"]

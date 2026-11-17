@@ -8,6 +8,28 @@ use std::{
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.first().map(String::as_str) {
+        Some("deleted-runner") => {
+            std::fs::remove_file(std::env::current_exe().unwrap()).unwrap();
+            let mut runner = teem::checks::Runner::default();
+            let handle = runner.start(std::path::Path::new(&args[1]), std::path::Path::new(&args[2]),
+                &serde_json::json!([{"name":"inspect","kind":"inspect","argv":["git","status","--porcelain"]}]), "snapshot").unwrap();
+            let start = std::time::Instant::now();
+            loop {
+                if let Some(receipt) = teem::checks::inspect(&handle).unwrap() {
+                    assert_eq!(receipt["passed"], true, "{receipt}");
+                    break;
+                }
+                assert!(start.elapsed() < Duration::from_secs(10));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        Some("check-helper")
+            if std::env::current_exe().unwrap().file_name().unwrap()
+                == "deleted-runner-fixture (deleted)" =>
+        {
+            let spec = serde_json::from_slice(&std::fs::read(&args[1]).unwrap()).unwrap();
+            teem::checks::run(&spec).unwrap();
+        }
         Some("sleep") => std::thread::sleep(Duration::from_millis(args[1].parse().unwrap())),
         Some("output") => {
             let n: usize = args[1].parse().unwrap();

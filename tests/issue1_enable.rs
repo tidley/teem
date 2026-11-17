@@ -13,6 +13,57 @@ use teem::{
 
 const CHAT: &str = "ses_issue1";
 
+#[test]
+fn refresh_request_requires_existing_receipt_exact_caller_and_no_target_arguments() {
+    let f = Fixture::new();
+    let envelope =
+        json!({"sessionID":CHAT,"agent":"build","name":"teem_refresh_enablement","arguments":{}});
+    assert!(enable::refresh_request(&f.store, &f.native, &envelope).is_err());
+    f.enable();
+    let request = enable::refresh_request(&f.store, &f.native, &envelope).unwrap();
+    assert_eq!(request.request, f.request());
+    for (field, value) in [
+        ("agent", json!("teem")),
+        ("sessionID", json!("not_a_session")),
+        ("arguments", json!({"sessionID":"ses_other"})),
+        ("arguments", json!(null)),
+    ] {
+        let mut changed = envelope.clone();
+        changed[field] = value;
+        assert!(
+            enable::refresh_request(&f.store, &f.native, &changed).is_err(),
+            "{changed}"
+        );
+    }
+    assert!(f.store.tasks(None).unwrap().is_empty());
+    assert!(
+        f.store
+            .query("SELECT * FROM chat_enablement_refreshes", [])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn refresh_preserves_effective_model_after_user_changes_native_selection() {
+    let f = Fixture::new();
+    f.enable();
+    f.native.session.borrow_mut()["model"] =
+        json!({"providerID":"other","id":"selected","variant":"high"});
+    let task = json!({"foreman":CHAT});
+    let before = enable::dispatch_model(&f.store, &f.native, &task).unwrap();
+    let (_, herdr) = restored_context(&f);
+    let envelope =
+        json!({"sessionID":CHAT,"agent":"teem","name":"teem_refresh_enablement","arguments":{}});
+    let refresh = enable::refresh_request(&f.store, &f.native, &envelope).unwrap();
+    assert_eq!(refresh.request["model"], before);
+    enable::refresh(&f.store, &f.native, &refresh, &herdr).unwrap();
+    assert_eq!(
+        enable::dispatch_model(&f.store, &f.native, &task).unwrap(),
+        before
+    );
+}
+
 fn restored_context(f: &Fixture) -> (Value, Value) {
     f.native.session.borrow_mut()["agent"] = json!("teem");
     let mut request = f.request();
@@ -21,6 +72,59 @@ fn restored_context(f: &Fixture) -> (Value, Value) {
     herdr["result"]["agent"]["terminal_id"] = json!("terminal_restored");
     herdr["result"]["agents"] = json!([herdr["result"]["agent"].clone()]);
     (request, herdr)
+}
+
+#[test]
+fn same_chat_repair_preserves_removed_home_policy_without_granting_execution() {
+    let mut f = Fixture::new();
+    f.enable();
+    let (_, herdr) = restored_context(&f);
+    f.store.projects = json!({});
+    let envelope =
+        json!({"sessionID":CHAT,"agent":"teem","name":"teem_refresh_enablement","arguments":{}});
+    let request = enable::refresh_request(&f.store, &f.native, &envelope).unwrap();
+    let result = enable::refresh(&f.store, &f.native, &request, &herdr).unwrap();
+    assert_eq!(result["project"], "a");
+    assert_eq!(
+        enable::authority(&f.store, &f.native, CHAT, "teem").unwrap()["project"],
+        "a"
+    );
+    assert!(enable::dispatch_model(&f.store, &f.native, &json!({"foreman":CHAT})).is_err());
+    assert!(f.store.tasks(None).unwrap().is_empty());
+    assert!(f.store.workflows(CHAT).unwrap().is_empty());
+}
+
+#[test]
+fn refresh_rejects_native_model_drift_during_roster_lookup_without_writes() {
+    let f = Fixture::new();
+    f.enable();
+    let (_, herdr) = restored_context(&f);
+    let old = f.store.query("SELECT * FROM chat_enablements", []).unwrap();
+    let binding = f.store.binding(CHAT).unwrap();
+    let request = enable::refresh_request(
+        &f.store,
+        &f.native,
+        &json!({"sessionID":CHAT,"agent":"teem","name":"teem_refresh_enablement","arguments":{}}),
+    )
+    .unwrap();
+    f.native.session.borrow_mut()["model"] = json!({"providerID":"other","id":"new"});
+    assert!(
+        enable::refresh(&f.store, &f.native, &request, &herdr)
+            .unwrap_err()
+            .to_string()
+            .contains("changed during enablement refresh")
+    );
+    assert_eq!(
+        f.store.query("SELECT * FROM chat_enablements", []).unwrap(),
+        old
+    );
+    assert_eq!(f.store.binding(CHAT).unwrap(), binding);
+    assert!(
+        f.store
+            .query("SELECT * FROM chat_enablement_refreshes", [])
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -926,15 +1030,25 @@ fn native_recovery_retry_is_read_only_after_policy_removal() {
 
 #[test]
 fn cli_enable_uses_native_herdr_subprocess_and_exact_local_http_without_activation() {
-    cli_enable_contract(false);
+    cli_enable_contract(false, false, false);
 }
 
 #[test]
 fn cli_refresh_uses_trusted_herdr_roster_without_activation() {
-    cli_enable_contract(true);
+    cli_enable_contract(true, false, false);
 }
 
-fn cli_enable_contract(refresh: bool) {
+#[test]
+fn native_refresh_repairs_only_its_host_authenticated_chat_without_ui_approval() {
+    cli_enable_contract(true, true, false);
+}
+
+#[test]
+fn operator_refresh_uses_exact_native_identity_without_impersonating_tool_context() {
+    cli_enable_contract(true, true, true);
+}
+
+fn cli_enable_contract(refresh: bool, tool: bool, operator: bool) {
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -949,6 +1063,10 @@ fn cli_enable_contract(refresh: bool) {
     } else {
         (f.request(), f.herdr())
     };
+    let mut herdr = herdr;
+    if tool {
+        herdr["result"]["agents"][0]["pane_id"] = json!("issue1-pane");
+    }
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let registry = f.directory.path().join("registry.json");
@@ -965,7 +1083,15 @@ fn cli_enable_contract(refresh: bool) {
     fs::write(&config, toml::to_string(&settings).unwrap()).unwrap();
     let session = f.native.session.borrow().clone();
     let server = thread::spawn(move || {
-        for _ in 0..if refresh { 2 } else { 1 } {
+        for _ in 0..if operator {
+            4
+        } else if tool {
+            3
+        } else if refresh {
+            2
+        } else {
+            1
+        } {
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut stream = loop {
                 match listener.accept() {
@@ -997,9 +1123,27 @@ fn cli_enable_contract(refresh: bool) {
         }
     });
     let mut child = Command::new(env!("CARGO_BIN_EXE_teem"))
-        .args(["--config", config.to_str().unwrap(), "enable-chat"])
-        .env("HERDR_ENV", "1")
-        .env("HERDR_PANE_ID", "issue1-pane")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            if operator {
+                "refresh-chat"
+            } else if tool {
+                "native-call"
+            } else {
+                "enable-chat"
+            },
+        ])
+        .args(if operator { vec![CHAT] } else { vec![] })
+        .env("HERDR_ENV", if tool { "0" } else { "1" })
+        .env(
+            "HERDR_PANE_ID",
+            if tool {
+                "stale-server-pane"
+            } else {
+                "issue1-pane"
+            },
+        )
         .env(
             "HERDR_BIN_PATH",
             env!("CARGO_BIN_EXE_teem-subprocess-fixture"),
@@ -1018,7 +1162,7 @@ fn cli_enable_contract(refresh: bool) {
         .stdin
         .take()
         .unwrap()
-        .write_all(canonical(&request).as_bytes())
+        .write_all(canonical(&if tool { json!({"sessionID":CHAT,"agent":request["agent"],"name":"teem_refresh_enablement","arguments":{}}) } else { request }).as_bytes())
         .unwrap();
     let output = child.wait_with_output().unwrap();
     server.join().unwrap();

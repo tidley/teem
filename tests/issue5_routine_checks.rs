@@ -34,6 +34,27 @@ fn policy() -> Value {
 fn runner() -> checks::Runner {
     checks::Runner::with_executable(PathBuf::from(env!("CARGO_BIN_EXE_teem")))
 }
+#[test]
+fn default_runner_reexecutes_its_mapped_image_after_atomic_upgrade() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    git(&source, &["init"], None, None).unwrap();
+    let executable = tmp.path().join("deleted-runner-fixture");
+    fs::copy(env!("CARGO_BIN_EXE_teem-subprocess-fixture"), &executable).unwrap();
+    let output = std::process::Command::new(&executable)
+        .arg("deleted-runner")
+        .arg(tmp.path().join("checks"))
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!executable.exists());
+}
 fn maximum_policy() -> Value {
     let mut argv = vec![json!("cargo")];
     argv.extend((1..64).map(|_| json!("é".repeat(2048))));

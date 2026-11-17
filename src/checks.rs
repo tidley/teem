@@ -299,7 +299,13 @@ impl Runner {
             .create_new(true)
             .mode(0o600)
             .open(dir.join("helper.log"))?;
-        let mut cmd = Command::new(self.executable.clone().unwrap_or(std::env::current_exe()?));
+        // The install pathname can be unlinked by an atomic upgrade. Re-exec
+        // this mapped image, not a different version now at the install path.
+        let mut cmd = Command::new(
+            self.executable
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("/proc/self/exe")),
+        );
         cmd.arg("check-helper")
             .arg(&path)
             .current_dir(&dir)

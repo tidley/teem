@@ -435,8 +435,15 @@ fn registration(
     let mut d = Document::new(raw)?;
     let template: Value = serde_json::from_str(include_str!("../examples/pilot-teem.json"))?;
     // Canonical global chats use authenticated native tools, not a fixed MCP owner.
-    let profile = &template["agents"]["teem"];
+    let mut profile = template["agents"]["teem"].clone();
     ensure!(profile.is_object(), "Missing shipped Teem agent template");
+    profile["system"] = json!(format!(
+        "{}\n\n{}",
+        profile["system"]
+            .as_str()
+            .context("Missing shipped system prompt")?,
+        include_str!("../docs/AUTONOMOUS_DELIVERY.md")
+    ));
     let mut root = Vec::new();
     if let Some(agents) = d.value.get("agents") {
         ensure!(agents.is_object(), "agents must be an object");
@@ -445,13 +452,13 @@ fn registration(
         } else {
             d.append(
                 &["agents"],
-                format!("\"teem\":{}", serde_json::to_string(profile)?),
+                format!("\"teem\":{}", serde_json::to_string(&profile)?),
             )?;
         }
     } else {
         root.push(format!(
             "\"agents\":{{\"teem\":{}}}",
-            serde_json::to_string(profile)?
+            serde_json::to_string(&profile)?
         ));
     }
     let options = json!({"executable":executable,"config":config});

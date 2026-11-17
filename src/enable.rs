@@ -60,6 +60,16 @@ fn execution_project(s: &Store, receipt: &Value) -> Result<String> {
 }
 
 pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Result<Value> {
+    enable_observed(s, r, request, herdr, None)
+}
+
+fn enable_observed(
+    s: &Store,
+    r: &dyn Runtime,
+    request: &Value,
+    herdr: &Value,
+    expected: Option<&Value>,
+) -> Result<Value> {
     let fields = ["sessionID", "agent", "projectID", "directory", "model"];
     let args = request
         .as_object()
@@ -70,6 +80,14 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
     );
     let id = text(request, "sessionID");
     let n = native(r, &id)?;
+    if let Some(expected) = expected {
+        for field in ["agent", "projectID", "location", "model"] {
+            ensure!(
+                n[field] == expected[field],
+                "Native chat identity or model changed during enablement refresh"
+            );
+        }
+    }
     let a = &herdr["result"]["agent"];
     let h = &a["agent_session"];
     ensure!(
@@ -99,7 +117,7 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
         .filter(|m| !m.is_null())
         .map(model)
         .transpose()?;
-    let receipt = json!({"foreman":id,"terminal_id":a["terminal_id"],
+    let mut receipt = json!({"foreman":id,"terminal_id":a["terminal_id"],
         "directory":n["location"]["directory"],"project_id":n["projectID"],
         "project":project,"agent":n["agent"],"model":selected,"native_model":observed});
     let mut refreshed = false;
@@ -109,6 +127,12 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
             .query("SELECT * FROM chat_enablements WHERE foreman=?", [&id])?
             .into_iter().next();
         if let Some(old) = &old {
+            // Same-chat repair is not execution admission. Preserve the old
+            // policy association if no policy now matches the unchanged home;
+            // execution_project still rejects delegation from that directory.
+            if expected.is_some() && matches.is_empty() {
+                receipt["project"] = old["project"].clone();
+            }
             for k in ["directory", "project_id", "project"] {
                 ensure!(
                     old[k] == receipt[k] || (k == "project" && old[k] == ""),
@@ -152,7 +176,7 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
                 text(&receipt, "terminal_id"),
                 text(&receipt, "directory"),
                 text(&receipt, "project_id"),
-                project,
+                text(&receipt,"project"),
                 text(&receipt, "agent"),
                 canonical(&selected),
                 canonical(&json!(observed))
@@ -166,7 +190,7 @@ pub fn enable(s: &Store, r: &dyn Runtime, request: &Value, herdr: &Value) -> Res
         Ok(())
     })?;
     Ok(
-        json!({"enabled":true,"sessionID":id,"project":project,"terminal_id":a["terminal_id"],"refreshed":refreshed,"started":false}),
+        json!({"enabled":true,"sessionID":id,"project":receipt["project"],"terminal_id":a["terminal_id"],"refreshed":refreshed,"started":false}),
     )
 }
 
@@ -294,11 +318,78 @@ pub fn authority(s: &Store, r: &dyn Runtime, id: &str, caller_agent: &str) -> Re
 }
 
 pub fn tools() -> Value {
-    json!(
-        array(&plugin::tools())
-            .into_iter()
-            .filter(|t| t["name"] != "teem_submit")
-            .collect::<Vec<_>>()
+    let mut tools = array(&plugin::tools())
+        .into_iter()
+        .filter(|t| t["name"] != "teem_submit")
+        .collect::<Vec<_>>();
+    tools.push(json!({"name":"teem_refresh_enablement","description":"Repair this authenticated chat's stale enablement after terminal restoration or selection of Teem. Retains model selection, permissions and workflow ownership; verifies native identity and a complete Herdr pane roster. Starts no work; no repeated user approval is needed for same-chat repair.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}));
+    json!(tools)
+}
+
+pub struct RefreshRequest {
+    pub request: Value,
+    observed: Value,
+}
+
+pub fn refresh_request(s: &Store, r: &dyn Runtime, envelope: &Value) -> Result<RefreshRequest> {
+    ensure!(
+        envelope.as_object().is_some_and(|a| a.len() == 4
+            && ["sessionID", "agent", "name", "arguments"]
+                .iter()
+                .all(|k| a.contains_key(*k)))
+            && envelope["name"] == "teem_refresh_enablement"
+            && envelope["arguments"]
+                .as_object()
+                .is_some_and(|a| a.is_empty()),
+        "Use the authenticated same-chat refresh with no arguments"
+    );
+    let id = text(envelope, "sessionID");
+    let n = native(r, &id)?;
+    ensure!(
+        n["agent"] == envelope["agent"],
+        "Native caller agent does not match this chat"
+    );
+    let old = s
+        .query("SELECT * FROM chat_enablements WHERE foreman=?", [&id])?
+        .into_iter()
+        .next()
+        .context("No existing enablement receipt to refresh")?;
+    let captured: Value =
+        serde_json::from_str(old["model"].as_str().context("Invalid enable receipt")?)?;
+    let baseline: Value = serde_json::from_str(
+        old["native_model"]
+            .as_str()
+            .context("Invalid enable receipt")?,
+    )?;
+    // Preserve dispatch_model's effective selection, including a user change
+    // made since capture, before enable establishes a new native baseline.
+    let selected = model(if n["model"] != baseline {
+        &n["model"]
+    } else {
+        &captured
+    })?;
+    Ok(RefreshRequest {
+        request: json!({"sessionID":id,"agent":n["agent"],"projectID":n["projectID"],"directory":n["location"]["directory"],"model":selected}),
+        observed: n,
+    })
+}
+
+pub fn refresh(
+    s: &Store,
+    r: &dyn Runtime,
+    request: &RefreshRequest,
+    herdr: &Value,
+) -> Result<Value> {
+    enable_observed(s, r, &request.request, herdr, Some(&request.observed))
+}
+
+/// Operator CLI repair of an explicitly selected chat, never a native tool target.
+pub fn operator_refresh_request(s: &Store, r: &dyn Runtime, id: &str) -> Result<RefreshRequest> {
+    let n = native(r, id)?;
+    refresh_request(
+        s,
+        r,
+        &json!({"sessionID":id,"agent":n["agent"],"name":"teem_refresh_enablement","arguments":{}}),
     )
 }
 

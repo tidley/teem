@@ -60,8 +60,13 @@ fn fresh_shared_install_repeat_and_unconfigured_native_bootstrap() {
     let f = Fixture::new();
     success(f.install());
     let global = f.global();
-    let template: Value =
+    let mut template: Value =
         serde_json::from_str(include_str!("../examples/pilot-teem.json")).unwrap();
+    template["agents"]["teem"]["system"] = json!(format!(
+        "{}\n\n{}",
+        template["agents"]["teem"]["system"].as_str().unwrap(),
+        include_str!("../docs/AUTONOMOUS_DELIVERY.md")
+    ));
     assert!(
         !global["agents"]["teem"]["system"]
             .as_str()
